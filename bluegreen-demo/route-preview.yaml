@@ -1,0 +1,14 @@
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: bluegreen-demo-preview
+  namespace: bluegreen-demo
+spec:
+  to:
+    kind: Service
+    name: bluegreen-demo-preview
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect

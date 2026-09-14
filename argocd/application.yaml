@@ -1,0 +1,42 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: bluegreen-demo
+  namespace: openshift-gitops
+spec:
+  project: default
+
+  source:
+    repoURL: https://github.com/REPLACE_ME/REPLACE_ME.git
+    targetRevision: main
+    path: bluegreen-demo
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: bluegreen-demo
+
+  # Argo Rollouts owns this selector key on the active and preview Services.
+  # Ignoring only this key prevents Argo CD self-heal from fighting the
+  # Rollouts controller while keeping the rest of each Service Git-managed.
+  ignoreDifferences:
+    - group: ""
+      kind: Service
+      name: bluegreen-demo-active
+      namespace: bluegreen-demo
+      jqPathExpressions:
+        - '.spec.selector."rollouts-pod-template-hash"'
+    - group: ""
+      kind: Service
+      name: bluegreen-demo-preview
+      namespace: bluegreen-demo
+      jqPathExpressions:
+        - '.spec.selector."rollouts-pod-template-hash"'
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ApplyOutOfSyncOnly=true
+      - RespectIgnoreDifferences=true

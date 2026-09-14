@@ -1,0 +1,59 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: bluegreen-demo
+  namespace: bluegreen-demo
+spec:
+  replicas: 2
+  revisionHistoryLimit: 2
+
+  selector:
+    matchLabels:
+      app: bluegreen-demo
+
+  template:
+    metadata:
+      labels:
+        app: bluegreen-demo
+    spec:
+      containers:
+        - name: rollouts-demo
+          # Initial stable version (BLUE).
+          # Change this tag to :green in Git to start a blue/green rollout.
+          image: argoproj/rollouts-demo:blue
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+
+  strategy:
+    blueGreen:
+      activeService: bluegreen-demo-active
+      previewService: bluegreen-demo-preview
+
+      # Manual gate: GREEN remains preview-only until explicitly promoted.
+      autoPromotionEnabled: false
+
+      # Keep the previous active ReplicaSet alive briefly after the Service
+      # switch to allow Service routing propagation to settle.
+      scaleDownDelaySeconds: 30
