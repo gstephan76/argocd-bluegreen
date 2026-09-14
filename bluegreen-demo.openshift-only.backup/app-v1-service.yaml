@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: app-v1
+  namespace: bluegreen-demo
+spec:
+  selector:
+    app: bluegreen-app
+    version: v1
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      protocol: TCP
