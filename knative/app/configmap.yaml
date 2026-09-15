@@ -1,0 +1,35 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: httpd-single-page
+  namespace: knative-httpd
+  labels:
+    app.kubernetes.io/name: httpd-single-page
+    app.kubernetes.io/part-of: knative-httpd-demo
+data:
+  index.html: |
+    <!doctype html>
+    <html lang="en">
+    <head>
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1">
+      <title>Knative HTTPD Demo</title>
+      <style>
+        :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+        body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #111827; color: #f9fafb; }
+        main { width: min(760px, calc(100% - 3rem)); padding: 3rem; border: 1px solid #374151; border-radius: 1rem; background: #1f2937; box-shadow: 0 20px 50px rgba(0,0,0,.35); }
+        h1 { margin-top: 0; font-size: clamp(2rem, 6vw, 4rem); }
+        p { line-height: 1.6; font-size: 1.1rem; color: #d1d5db; }
+        code { padding: .15rem .4rem; border-radius: .3rem; background: #111827; color: #93c5fd; }
+        .badge { display: inline-block; padding: .4rem .7rem; border-radius: 999px; background: #064e3b; color: #a7f3d0; font-weight: 700; }
+      </style>
+    </head>
+    <body>
+      <main>
+        <span class="badge">Knative Serving</span>
+        <h1>HTTPD is running serverless on OpenShift.</h1>
+        <p>This single-page application is served by the Red Hat UBI 9 Apache HTTP Server image through a Knative <code>Service</code>.</p>
+        <p>The revision is configured with <code>min-scale: 0</code>, so the application can scale to zero when idle and reactivate when the next HTTP request arrives.</p>
+      </main>
+    </body>
+    </html>

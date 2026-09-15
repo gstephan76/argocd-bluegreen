@@ -1,0 +1,43 @@
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: httpd-single-page
+  namespace: knative-httpd
+  labels:
+    app.kubernetes.io/name: httpd-single-page
+    app.kubernetes.io/part-of: knative-httpd-demo
+spec:
+  template:
+    metadata:
+      annotations:
+        autoscaling.knative.dev/min-scale: "0"
+        autoscaling.knative.dev/max-scale: "5"
+        autoscaling.knative.dev/metric: concurrency
+        autoscaling.knative.dev/target: "20"
+    spec:
+      containerConcurrency: 50
+      containers:
+        - name: httpd
+          image: registry.access.redhat.com/ubi9/httpd-24:latest
+          ports:
+            - name: http1
+              containerPort: 8080
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          volumeMounts:
+            - name: page
+              mountPath: /var/www/html/index.html
+              subPath: index.html
+              readOnly: true
+      volumes:
+        - name: page
+          configMap:
+            name: httpd-single-page
+            items:
+              - key: index.html
+                path: index.html
