@@ -1,0 +1,242 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+NAMESPACE="${NAMESPACE:-bluegreen-demo}"
+ARGOCD_NAMESPACE="${ARGOCD_NAMESPACE:-openshift-gitops}"
+APP_NAME="${APP_NAME:-bluegreen-demo}"
+TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-300}"
+POLL_SECONDS="${POLL_SECONDS:-5}"
+PREVIEW_ONLY=false
+
+case "${1:-}" in
+  "") ;;
+  --preview-only) PREVIEW_ONLY=true ;;
+  *)
+    echo "Usage: $0 [--preview-only]" >&2
+    exit 2
+    ;;
+esac
+
+die() {
+  echo "ERROR: $*" >&2
+  exit 1
+}
+
+need() {
+  command -v "$1" >/dev/null 2>&1 || die "Required command not found: $1"
+}
+
+need oc
+need git
+need sed
+
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+[[ -n "${REPO_ROOT}" ]] || die "Run this script from inside the argocd-bluegreen Git repository."
+cd "${REPO_ROOT}"
+
+ROLLOUT_FILE="bluegreen-demo/rollout.yaml"
+[[ -f "${ROLLOUT_FILE}" ]] || die "${ROLLOUT_FILE} not found."
+
+oc whoami >/dev/null 2>&1 || die "Not logged in to an OpenShift cluster."
+oc argo rollouts version >/dev/null 2>&1 || \
+  die "The Argo Rollouts oc plugin is required for promotion."
+
+branch="$(git branch --show-current)"
+[[ -n "${branch}" ]] || die "Detached HEAD is not supported."
+git remote get-url origin >/dev/null 2>&1 || die "Git remote 'origin' is not configured."
+
+if ! git diff --quiet || ! git diff --cached --quiet; then
+  die "Tracked Git changes are present. Commit/stash them before switching to GREEN."
+fi
+
+echo "==> Refreshing origin/${branch}"
+git fetch origin
+
+if git show-ref --verify --quiet "refs/remotes/origin/${branch}"; then
+  read -r behind ahead < <(
+    git rev-list --left-right --count "origin/${branch}...HEAD"
+  )
+  if (( behind > 0 )); then
+    die "Local ${branch} is behind origin/${branch} by ${behind} commit(s). Run: git pull --ff-only"
+  fi
+  if (( ahead > 0 )); then
+    die "Local ${branch} is ahead of origin/${branch} by ${ahead} commit(s). Push or reconcile those commits before running this demo switch."
+  fi
+fi
+
+current_image="$(awk '/^[[:space:]]*image:[[:space:]]+argoproj\/rollouts-demo:/ {print $2; exit}' \
+  "${ROLLOUT_FILE}")"
+
+case "${current_image}" in
+  argoproj/rollouts-demo:blue)
+    echo "==> Changing desired image BLUE -> GREEN in Git"
+    sed -i \
+      's#argoproj/rollouts-demo:blue#argoproj/rollouts-demo:green#' \
+      "${ROLLOUT_FILE}"
+
+    git add "${ROLLOUT_FILE}"
+    git diff --cached --check
+    git commit -m "Deploy green preview"
+    git push origin "${branch}"
+    ;;
+  argoproj/rollouts-demo:green)
+    echo "==> Git already requests GREEN; no image commit is required."
+    ;;
+  *)
+    die "Unexpected demo image '${current_image}'. Expected :blue or :green."
+    ;;
+esac
+
+desired_revision="$(git rev-parse HEAD)"
+
+echo "==> Waiting for Argo CD to sync revision ${desired_revision:0:12}"
+deadline=$((SECONDS + TIMEOUT_SECONDS))
+while (( SECONDS < deadline )); do
+  sync_status="$(oc get application "${APP_NAME}" \
+    -n "${ARGOCD_NAMESPACE}" \
+    -o jsonpath='{.status.sync.status}' 2>/dev/null || true)"
+  synced_revision="$(oc get application "${APP_NAME}" \
+    -n "${ARGOCD_NAMESPACE}" \
+    -o jsonpath='{.status.sync.revision}' 2>/dev/null || true)"
+
+  if [[ "${sync_status}" == "Synced" && "${synced_revision}" == "${desired_revision}" ]]; then
+    echo "    Argo CD synced the GREEN Git revision."
+    break
+  fi
+
+  printf '    sync=%s revision=%s\n' \
+    "${sync_status:-unknown}" \
+    "${synced_revision:0:12}"
+
+  sleep "${POLL_SECONDS}"
+done
+
+if (( SECONDS >= deadline )); then
+  oc get application "${APP_NAME}" -n "${ARGOCD_NAMESPACE}" -o yaml || true
+  die "Timed out waiting for Argo CD to sync the GREEN commit."
+fi
+
+active_hash="$(oc get svc "${APP_NAME}-active" \
+  -n "${NAMESPACE}" \
+  -o jsonpath='{.spec.selector.rollouts-pod-template-hash}' 2>/dev/null || true)"
+active_image=""
+if [[ -n "${active_hash}" ]]; then
+  active_image="$(oc get pods \
+    -n "${NAMESPACE}" \
+    -l "rollouts-pod-template-hash=${active_hash}" \
+    -o jsonpath='{.items[0].spec.containers[0].image}' 2>/dev/null || true)"
+fi
+
+if [[ "${active_image}" == "argoproj/rollouts-demo:green" ]]; then
+  active_host="$(oc get route "${APP_NAME}" -n "${NAMESPACE}" -o jsonpath='{.spec.host}')"
+  echo
+  echo "GREEN is already active in production."
+  echo "Production URL: https://${active_host}"
+  exit 0
+fi
+
+echo "==> Waiting for GREEN to become the preview ReplicaSet"
+deadline=$((SECONDS + TIMEOUT_SECONDS))
+preview_hash=""
+active_hash=""
+while (( SECONDS < deadline )); do
+  active_hash="$(oc get svc "${APP_NAME}-active" \
+    -n "${NAMESPACE}" \
+    -o jsonpath='{.spec.selector.rollouts-pod-template-hash}' 2>/dev/null || true)"
+  preview_hash="$(oc get svc "${APP_NAME}-preview" \
+    -n "${NAMESPACE}" \
+    -o jsonpath='{.spec.selector.rollouts-pod-template-hash}' 2>/dev/null || true)"
+
+  preview_image=""
+  if [[ -n "${preview_hash}" ]]; then
+    preview_image="$(oc get pods \
+      -n "${NAMESPACE}" \
+      -l "rollouts-pod-template-hash=${preview_hash}" \
+      -o jsonpath='{.items[0].spec.containers[0].image}' 2>/dev/null || true)"
+  fi
+
+  printf '    active=%s preview=%s image=%s\n' \
+    "${active_hash:-none}" \
+    "${preview_hash:-none}" \
+    "${preview_image:-unknown}"
+
+  if [[ -n "${active_hash}" &&
+        -n "${preview_hash}" &&
+        "${active_hash}" != "${preview_hash}" &&
+        "${preview_image}" == "argoproj/rollouts-demo:green" ]]; then
+    break
+  fi
+
+  sleep "${POLL_SECONDS}"
+done
+
+if (( SECONDS >= deadline )); then
+  oc argo rollouts get rollout "${APP_NAME}" -n "${NAMESPACE}" || true
+  die "Timed out waiting for a distinct GREEN preview ReplicaSet."
+fi
+
+echo "==> Waiting for GREEN preview pods to become Ready"
+oc wait \
+  --for=condition=Ready \
+  pod \
+  -l "rollouts-pod-template-hash=${preview_hash}" \
+  -n "${NAMESPACE}" \
+  --timeout="${TIMEOUT_SECONDS}s"
+
+active_host="$(oc get route "${APP_NAME}" \
+  -n "${NAMESPACE}" \
+  -o jsonpath='{.spec.host}')"
+preview_host="$(oc get route "${APP_NAME}-preview" \
+  -n "${NAMESPACE}" \
+  -o jsonpath='{.spec.host}')"
+
+echo
+echo "GREEN is ready for promotion."
+echo "Production (still BLUE): https://${active_host}"
+echo "Preview (GREEN)        : https://${preview_host}"
+echo
+oc argo rollouts get rollout "${APP_NAME}" -n "${NAMESPACE}"
+
+if [[ "${PREVIEW_ONLY}" == "true" ]]; then
+  echo
+  echo "Preview-only mode requested; GREEN has not been promoted."
+  echo "Promote later with:"
+  echo "  oc argo rollouts promote ${APP_NAME} -n ${NAMESPACE}"
+  exit 0
+fi
+
+echo
+echo "==> Promoting GREEN to production"
+oc argo rollouts promote "${APP_NAME}" -n "${NAMESPACE}"
+
+echo "==> Waiting for the active Service to switch to GREEN hash ${preview_hash}"
+deadline=$((SECONDS + TIMEOUT_SECONDS))
+while (( SECONDS < deadline )); do
+  active_hash="$(oc get svc "${APP_NAME}-active" \
+    -n "${NAMESPACE}" \
+    -o jsonpath='{.spec.selector.rollouts-pod-template-hash}' 2>/dev/null || true)"
+
+  if [[ "${active_hash}" == "${preview_hash}" ]]; then
+    break
+  fi
+
+  printf '    active=%s expected=%s\n' \
+    "${active_hash:-none}" \
+    "${preview_hash}"
+
+  sleep "${POLL_SECONDS}"
+done
+
+if (( SECONDS >= deadline )); then
+  oc argo rollouts get rollout "${APP_NAME}" -n "${NAMESPACE}" || true
+  die "Promotion command ran, but active Service did not switch to GREEN before timeout."
+fi
+
+echo
+echo "GREEN is now active in production."
+echo "Production URL: https://${active_host}"
+echo
+oc argo rollouts get rollout "${APP_NAME}" -n "${NAMESPACE}"
+
+echo
+echo "The previous BLUE ReplicaSet will be scaled down according to scaleDownDelaySeconds."

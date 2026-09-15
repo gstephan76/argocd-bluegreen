@@ -7,7 +7,7 @@ spec:
   project: default
 
   source:
-    repoURL: https://github.com/REPLACE_ME/REPLACE_ME.git
+    repoURL: https://github.com/gstephan76/argocd-bluegreen.git
     targetRevision: main
     path: bluegreen-demo
 
