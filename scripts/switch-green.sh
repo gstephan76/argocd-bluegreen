@@ -36,6 +36,7 @@ cd "${REPO_ROOT}"
 
 ROLLOUT_FILE="bluegreen-demo/rollout.yaml"
 [[ -f "${ROLLOUT_FILE}" ]] || die "${ROLLOUT_FILE} not found."
+[[ -f bluegreen-demo/analysis-template.yaml ]] || die "bluegreen-demo/analysis-template.yaml not found."
 
 oc whoami >/dev/null 2>&1 || die "Not logged in to an OpenShift cluster."
 oc argo rollouts version >/dev/null 2>&1 || \
@@ -183,6 +184,56 @@ oc wait \
   -n "${NAMESPACE}" \
   --timeout="${TIMEOUT_SECONDS}s"
 
+echo "==> Waiting for pre-promotion AnalysisRun"
+deadline=$((SECONDS + TIMEOUT_SECONDS))
+analysis_name=""
+analysis_status=""
+
+while (( SECONDS < deadline )); do
+  analysis_name="$(oc get rollout "${APP_NAME}" \
+    -n "${NAMESPACE}" \
+    -o jsonpath='{.status.blueGreen.prePromotionAnalysisRunStatus.name}' \
+    2>/dev/null || true)"
+
+  analysis_status="$(oc get rollout "${APP_NAME}" \
+    -n "${NAMESPACE}" \
+    -o jsonpath='{.status.blueGreen.prePromotionAnalysisRunStatus.status}' \
+    2>/dev/null || true)"
+
+  printf '    analysis=%s status=%s\n' \
+    "${analysis_name:-pending}" \
+    "${analysis_status:-pending}"
+
+  case "${analysis_status}" in
+    Successful)
+      break
+      ;;
+    Failed|Error|Inconclusive)
+      if [[ -n "${analysis_name}" ]]; then
+        echo
+        oc get analysisrun "${analysis_name}" -n "${NAMESPACE}" -o yaml || true
+      fi
+      echo
+      oc get job,pod \
+        -n "${NAMESPACE}" \
+        -l app=bluegreen-demo-analysis \
+        -o wide || true
+      die "Pre-promotion analysis ended with status ${analysis_status}. Production remains on BLUE. Revert the GREEN Git commit before retrying."
+      ;;
+  esac
+
+  sleep "${POLL_SECONDS}"
+done
+
+if (( SECONDS >= deadline )); then
+  oc argo rollouts get rollout "${APP_NAME}" -n "${NAMESPACE}" || true
+  [[ -z "${analysis_name}" ]] || \
+    oc get analysisrun "${analysis_name}" -n "${NAMESPACE}" -o yaml || true
+  die "Timed out waiting for the pre-promotion analysis."
+fi
+
+echo "    AnalysisRun ${analysis_name} succeeded."
+
 active_host="$(oc get route "${APP_NAME}" \
   -n "${NAMESPACE}" \
   -o jsonpath='{.spec.host}')"
@@ -191,15 +242,17 @@ preview_host="$(oc get route "${APP_NAME}-preview" \
   -o jsonpath='{.spec.host}')"
 
 echo
-echo "GREEN is ready for promotion."
+echo "GREEN passed pre-promotion analysis and is ready for promotion."
 echo "Production (still BLUE): https://${active_host}"
 echo "Preview (GREEN)        : https://${preview_host}"
+echo "AnalysisRun            : ${analysis_name}"
 echo
 oc argo rollouts get rollout "${APP_NAME}" -n "${NAMESPACE}"
 
 if [[ "${PREVIEW_ONLY}" == "true" ]]; then
   echo
   echo "Preview-only mode requested; GREEN has not been promoted."
+  echo "The pre-promotion analysis has already succeeded."
   echo "Promote later with:"
   echo "  oc argo rollouts promote ${APP_NAME} -n ${NAMESPACE}"
   exit 0

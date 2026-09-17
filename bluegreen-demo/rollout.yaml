@@ -51,7 +51,18 @@ spec:
       activeService: bluegreen-demo-active
       previewService: bluegreen-demo-preview
 
-      # Manual gate: GREEN remains preview-only until explicitly promoted.
+      # Before GREEN can be promoted, Argo Rollouts creates an AnalysisRun
+      # from bluegreen-demo-smoke-test. The AnalysisRun executes a Job that
+      # performs HTTP checks against the preview Service. Failed analysis
+      # aborts the rollout before the active Service is switched.
+      prePromotionAnalysis:
+        templates:
+          - templateName: bluegreen-demo-smoke-test
+        args:
+          - name: preview-url
+            value: http://bluegreen-demo-preview.bluegreen-demo.svc.cluster.local
+
+      # Manual gate remains after successful pre-promotion analysis.
       autoPromotionEnabled: false
 
       # Keep the previous active ReplicaSet alive briefly after the Service

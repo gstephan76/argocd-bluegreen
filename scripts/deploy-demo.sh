@@ -5,6 +5,7 @@ NAMESPACE="${NAMESPACE:-bluegreen-demo}"
 ARGOCD_NAMESPACE="${ARGOCD_NAMESPACE:-openshift-gitops}"
 APP_NAME="${APP_NAME:-bluegreen-demo}"
 ROLLOUT_MANAGER="${ROLLOUT_MANAGER:-argo-rollout}"
+ANALYSIS_TEMPLATE="${ANALYSIS_TEMPLATE:-bluegreen-demo-smoke-test}"
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-300}"
 POLL_SECONDS="${POLL_SECONDS:-5}"
 
@@ -27,6 +28,7 @@ cd "${REPO_ROOT}"
 [[ -f bootstrap/kustomization.yaml ]] || die "bootstrap/kustomization.yaml not found."
 [[ -f argocd/application.yaml ]] || die "argocd/application.yaml not found."
 [[ -f bluegreen-demo/rollout.yaml ]] || die "bluegreen-demo/rollout.yaml not found."
+[[ -f bluegreen-demo/analysis-template.yaml ]] || die "bluegreen-demo/analysis-template.yaml not found."
 
 oc whoami >/dev/null 2>&1 || die "Not logged in to an OpenShift cluster. Run 'oc login' first."
 
@@ -34,7 +36,9 @@ echo "==> Verifying required CRDs"
 for crd in \
   applications.argoproj.io \
   rollouts.argoproj.io \
-  rolloutmanagers.argoproj.io
+  rolloutmanagers.argoproj.io \
+  analysistemplates.argoproj.io \
+  analysisruns.argoproj.io
 do
   oc get crd "${crd}" >/dev/null 2>&1 || die "Missing CRD: ${crd}"
 done
@@ -98,6 +102,21 @@ if (( SECONDS >= deadline )); then
   die "Timed out waiting for the Argo CD Application."
 fi
 
+echo "==> Verifying the pre-promotion AnalysisTemplate"
+deadline=$((SECONDS + TIMEOUT_SECONDS))
+while (( SECONDS < deadline )); do
+  if oc get analysistemplate "${ANALYSIS_TEMPLATE}" \
+    -n "${NAMESPACE}" >/dev/null 2>&1; then
+    echo "    AnalysisTemplate ${ANALYSIS_TEMPLATE} is present."
+    break
+  fi
+  sleep "${POLL_SECONDS}"
+done
+
+if (( SECONDS >= deadline )); then
+  die "Timed out waiting for AnalysisTemplate ${ANALYSIS_TEMPLATE}."
+fi
+
 echo "==> Waiting for the initial Rollout to exist"
 deadline=$((SECONDS + TIMEOUT_SECONDS))
 while (( SECONDS < deadline )); do
@@ -135,7 +154,7 @@ oc wait \
 
 echo
 echo "==> Current resources"
-oc get rollout,rs,pod,svc,route -n "${NAMESPACE}"
+oc get analysistemplate,rollout,rs,pod,svc,route -n "${NAMESPACE}"
 
 active_host="$(oc get route "${APP_NAME}" \
   -n "${NAMESPACE}" \
@@ -152,6 +171,11 @@ echo
 echo "Initial desired image:"
 awk '/^[[:space:]]*image:[[:space:]]+argoproj\/rollouts-demo:/ {print "  " $2; exit}' \
   bluegreen-demo/rollout.yaml
+
+echo
+echo "Pre-promotion analysis template:"
+echo "  ${ANALYSIS_TEMPLATE}"
+echo "  (No AnalysisRun is expected for the initial creation; it runs on the next revision.)"
 
 echo
 if oc argo rollouts version >/dev/null 2>&1; then
