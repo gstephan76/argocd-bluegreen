@@ -1,0 +1,14 @@
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: rollouts-canary-demo
+  namespace: rollouts-canary-demo
+spec:
+  to:
+    kind: Service
+    name: rollouts-canary-demo
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
