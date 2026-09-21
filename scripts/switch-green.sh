@@ -93,10 +93,10 @@ desired_revision="$(git rev-parse HEAD)"
 echo "==> Waiting for Argo CD to sync revision ${desired_revision:0:12}"
 deadline=$((SECONDS + TIMEOUT_SECONDS))
 while (( SECONDS < deadline )); do
-  sync_status="$(oc get application "${APP_NAME}" \
+  sync_status="$(oc get applications.argoproj.io "${APP_NAME}" \
     -n "${ARGOCD_NAMESPACE}" \
     -o jsonpath='{.status.sync.status}' 2>/dev/null || true)"
-  synced_revision="$(oc get application "${APP_NAME}" \
+  synced_revision="$(oc get applications.argoproj.io "${APP_NAME}" \
     -n "${ARGOCD_NAMESPACE}" \
     -o jsonpath='{.status.sync.revision}' 2>/dev/null || true)"
 
@@ -113,7 +113,7 @@ while (( SECONDS < deadline )); do
 done
 
 if (( SECONDS >= deadline )); then
-  oc get application "${APP_NAME}" -n "${ARGOCD_NAMESPACE}" -o yaml || true
+  oc get applications.argoproj.io "${APP_NAME}" -n "${ARGOCD_NAMESPACE}" -o yaml || true
   die "Timed out waiting for Argo CD to sync the GREEN commit."
 fi
 

@@ -5,6 +5,7 @@ NAMESPACE="${NAMESPACE:-bluegreen-demo}"
 ARGOCD_NAMESPACE="${ARGOCD_NAMESPACE:-openshift-gitops}"
 APP_NAME="${APP_NAME:-bluegreen-demo}"
 ROLLOUT_MANAGER="${ROLLOUT_MANAGER:-argo-rollout}"
+ROLLOUT_MANAGER_NAMESPACE="${ROLLOUT_MANAGER_NAMESPACE:-openshift-gitops}"
 ANALYSIS_TEMPLATE="${ANALYSIS_TEMPLATE:-bluegreen-demo-smoke-test}"
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-300}"
 POLL_SECONDS="${POLL_SECONDS:-5}"
@@ -54,10 +55,10 @@ echo "==> Waiting for RolloutManager ${ROLLOUT_MANAGER} to become available"
 deadline=$((SECONDS + TIMEOUT_SECONDS))
 while (( SECONDS < deadline )); do
   phase="$(oc get rolloutmanager "${ROLLOUT_MANAGER}" \
-    -n "${NAMESPACE}" \
+    -n "${ROLLOUT_MANAGER_NAMESPACE}" \
     -o jsonpath='{.status.phase}' 2>/dev/null || true)"
   controller="$(oc get rolloutmanager "${ROLLOUT_MANAGER}" \
-    -n "${NAMESPACE}" \
+    -n "${ROLLOUT_MANAGER_NAMESPACE}" \
     -o jsonpath='{.status.rolloutController}' 2>/dev/null || true)"
 
   if [[ "${phase}" == "Available" || "${controller}" == "Available" ]]; then
@@ -69,7 +70,7 @@ while (( SECONDS < deadline )); do
 done
 
 if (( SECONDS >= deadline )); then
-  oc get rolloutmanager "${ROLLOUT_MANAGER}" -n "${NAMESPACE}" -o yaml || true
+  oc get rolloutmanager "${ROLLOUT_MANAGER}" -n "${ROLLOUT_MANAGER_NAMESPACE}" -o yaml || true
   die "Timed out waiting for RolloutManager."
 fi
 
@@ -79,10 +80,10 @@ oc apply -f argocd/application.yaml
 echo "==> Waiting for Argo CD Application ${APP_NAME} to become Synced"
 deadline=$((SECONDS + TIMEOUT_SECONDS))
 while (( SECONDS < deadline )); do
-  sync_status="$(oc get application "${APP_NAME}" \
+  sync_status="$(oc get applications.argoproj.io "${APP_NAME}" \
     -n "${ARGOCD_NAMESPACE}" \
     -o jsonpath='{.status.sync.status}' 2>/dev/null || true)"
-  health_status="$(oc get application "${APP_NAME}" \
+  health_status="$(oc get applications.argoproj.io "${APP_NAME}" \
     -n "${ARGOCD_NAMESPACE}" \
     -o jsonpath='{.status.health.status}' 2>/dev/null || true)"
 
@@ -98,7 +99,7 @@ while (( SECONDS < deadline )); do
 done
 
 if (( SECONDS >= deadline )); then
-  oc get application "${APP_NAME}" -n "${ARGOCD_NAMESPACE}" -o yaml || true
+  oc get applications.argoproj.io "${APP_NAME}" -n "${ARGOCD_NAMESPACE}" -o yaml || true
   die "Timed out waiting for the Argo CD Application."
 fi
 
