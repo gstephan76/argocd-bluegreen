@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rollouts-canary-blackbox
+  namespace: rollouts-canary-demo
+data:
+  blackbox.yml: |
+    modules:
+      http_200:
+        prober: http
+        timeout: 5s
+        http:
+          method: GET
+          valid_status_codes:
+            - 200
+          preferred_ip_protocol: ip4

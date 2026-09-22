@@ -36,6 +36,10 @@ case "$image" in
 esac
 
 rev="$(git rev-parse HEAD)"
+
+echo "==> Requesting Argo CD hard refresh"
+oc annotate applications.argoproj.io "$APP_NAME"   -n "$ARGOCD_NAMESPACE"   argocd.argoproj.io/refresh=hard   --overwrite >/dev/null
+
 echo "==> Waiting for Argo CD revision ${rev:0:12}"
 deadline=$((SECONDS + TIMEOUT_SECONDS))
 while (( SECONDS < deadline )); do
@@ -47,18 +51,33 @@ while (( SECONDS < deadline )); do
 done
 (( SECONDS < deadline )) || die "Timed out waiting for Argo CD"
 
-echo "==> Waiting for manual 20% pause"
+echo "==> Waiting for 20% Prometheus analysis to pass and reach the manual pause"
 deadline=$((SECONDS + TIMEOUT_SECONDS))
 while (( SECONDS < deadline )); do
   phase="$(oc get rollout "$APP_NAME" -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
-  printf '    phase=%s\n' "${phase:-unknown}"
+  step="$(oc get rollout "$APP_NAME" -n "$NAMESPACE" -o jsonpath='{.status.currentStepIndex}' 2>/dev/null || true)"
+  printf '    phase=%s step=%s\n' "${phase:-unknown}" "${step:-unknown}"
+
+  if [[ "$phase" == "Degraded" ]]; then
+    echo
+    oc get analysisrun -n "$NAMESPACE" --sort-by=.metadata.creationTimestamp || true
+    oc argo rollouts get rollout "$APP_NAME" -n "$NAMESPACE" || true
+    die "Canary analysis failed. The rollout was not promoted."
+  fi
+
   [[ "$phase" == "Paused" ]] && break
   sleep "$POLL_SECONDS"
 done
-(( SECONDS < deadline )) || die "Timed out waiting for canary pause"
+(( SECONDS < deadline )) || die "Timed out waiting for successful canary analysis and pause"
+
+echo
+echo "==> AnalysisRuns"
+oc get analysisrun -n "$NAMESPACE" --sort-by=.metadata.creationTimestamp || true
 
 echo
 oc argo rollouts get rollout "$APP_NAME" -n "$NAMESPACE"
 echo
-echo "Promote: oc argo rollouts promote $APP_NAME -n $NAMESPACE"
-echo "Abort  : oc argo rollouts abort   $APP_NAME -n $NAMESPACE"
+echo "The 20% Prometheus gate has passed. Manual promotion is now allowed:"
+echo "  oc argo rollouts promote $APP_NAME -n $NAMESPACE"
+echo "Abort:"
+echo "  oc argo rollouts abort $APP_NAME -n $NAMESPACE"

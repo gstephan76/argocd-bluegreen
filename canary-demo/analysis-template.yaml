@@ -1,0 +1,57 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: rollouts-canary-demo-prometheus
+  namespace: rollouts-canary-demo
+spec:
+  args:
+    - name: prometheus-token
+      valueFrom:
+        secretKeyRef:
+          name: rollouts-canary-prometheus-token
+          key: token
+
+  metrics:
+    - name: canary-http-status-200
+      initialDelay: 20s
+      interval: 10s
+      count: 3
+      failureLimit: 1
+      successCondition: len(result) == 1 && result[0] == 200
+      provider:
+        prometheus:
+          address: https://thanos-querier.openshift-monitoring.svc:9091
+          insecure: true
+          timeout: 10
+          headers:
+            - key: Authorization
+              value: "Bearer {{args.prometheus-token}}"
+          query: |
+            max(
+              probe_http_status_code{
+                rollout="rollouts-canary-demo",
+                probe_target="canary"
+              }
+            )
+
+    - name: canary-probe-success
+      initialDelay: 20s
+      interval: 10s
+      count: 3
+      failureLimit: 1
+      successCondition: len(result) == 1 && result[0] == 1
+      provider:
+        prometheus:
+          address: https://thanos-querier.openshift-monitoring.svc:9091
+          insecure: true
+          timeout: 10
+          headers:
+            - key: Authorization
+              value: "Bearer {{args.prometheus-token}}"
+          query: |
+            max(
+              probe_success{
+                rollout="rollouts-canary-demo",
+                probe_target="canary"
+              }
+            )

@@ -36,17 +36,36 @@ spec:
               memory: 128Mi
   strategy:
     canary:
+      # Argo Rollouts rewrites this Service selector so it targets only the
+      # current canary ReplicaSet. The Blackbox Exporter probes this Service,
+      # preventing stable pods from masking a bad canary.
+      canaryService: rollouts-canary-demo-canary
       maxUnavailable: 0
       maxSurge: 1
       steps:
         - setWeight: 20
+        - analysis:
+            templates:
+              - templateName: rollouts-canary-demo-prometheus
         - pause: {}
+
         - setWeight: 40
+        - analysis:
+            templates:
+              - templateName: rollouts-canary-demo-prometheus
         - pause:
             duration: 20s
+
         - setWeight: 60
+        - analysis:
+            templates:
+              - templateName: rollouts-canary-demo-prometheus
         - pause:
             duration: 20s
+
         - setWeight: 80
+        - analysis:
+            templates:
+              - templateName: rollouts-canary-demo-prometheus
         - pause:
             duration: 20s

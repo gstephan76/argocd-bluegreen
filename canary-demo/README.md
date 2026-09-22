@@ -1,6 +1,8 @@
 # OpenShift GitOps + Argo Rollouts Canary Example
 
-This example complements the repository's blue/green demo with a basic **canary Rollout managed by Argo CD**.
+This example complements the repository's blue/green demo with a **canary Rollout managed by Argo CD and gated by Prometheus AnalysisRuns**.
+
+The canary does not advance merely because a pause expires. At every weight, Argo Rollouts runs an inline AnalysisRun and proceeds only when OpenShift Prometheus reports that a Blackbox probe of the canary-only Service returns HTTP **200**.
 
 ## Flow
 
@@ -13,33 +15,63 @@ Argo CD sync
    |
 20% canary
    |
-manual pause
+Prometheus AnalysisRun
+probe_http_status_code == 200
+probe_success == 1
+3 consecutive samples
    |
-promote
+   +-- failure --> Rollout aborts
    |
-40% -> wait 20s
-   |
-60% -> wait 20s
-   |
-80% -> wait 20s
-   |
-100% YELLOW stable
+   +-- success
+          |
+       manual pause
+          |
+       promote
+          |
+40% -> Analysis -> 20s
+60% -> Analysis -> 20s
+80% -> Analysis -> 20s
+          |
+       100% YELLOW
 ```
 
-## Important traffic-routing note
+## Exact HTTP 200 gate
 
-This example has no Service Mesh or dedicated traffic router. `setWeight` is therefore implemented by scaling the stable and canary ReplicaSets to approximate the requested weight.
+OpenShift HAProxy router metrics group responses into status classes such as `2xx` and therefore cannot distinguish `200` from another `2xx` status. This demo uses Prometheus Blackbox Exporter instead.
 
-With five replicas:
+The Blackbox module is configured with:
+
+```yaml
+valid_status_codes:
+  - 200
+```
+
+OpenShift user-workload Prometheus scrapes the exporter through a `ServiceMonitor`. The AnalysisTemplate queries OpenShift Thanos for:
 
 ```text
-20% -> 1 YELLOW + 4 BLUE
-40% -> 2 YELLOW + 3 BLUE
-60% -> 3 YELLOW + 2 BLUE
-80% -> 4 YELLOW + 1 BLUE
+probe_http_status_code == 200
+probe_success == 1
 ```
 
-The OpenShift Route points to one Kubernetes Service selecting all Rollout pods. This demonstrates the Rollout state machine, but is not precise L7 traffic shaping.
+Each inline AnalysisRun requires three consecutive successful measurements. An empty Prometheus result or a non-200 result fails closed.
+
+The Blackbox target is:
+
+```text
+http://rollouts-canary-demo-canary.rollouts-canary-demo.svc.cluster.local/color
+```
+
+`rollouts-canary-demo-canary` is controlled by Argo Rollouts and selects only the current canary ReplicaSet. Stable pods therefore cannot hide a broken canary.
+
+## Prerequisites
+
+OpenShift user-workload monitoring must be enabled:
+
+```bash
+oc get statefulset prometheus-user-workload   -n openshift-user-workload-monitoring
+
+oc get service thanos-querier   -n openshift-monitoring
+```
 
 ## Deploy
 
@@ -51,7 +83,7 @@ bash scripts/deploy-canary-demo.sh
 Verify:
 
 ```bash
-oc get applications.argoproj.io rollouts-canary-demo -n openshift-gitops
+oc get analysistemplate,servicemonitor -n rollouts-canary-demo
 oc argo rollouts get rollout rollouts-canary-demo -n rollouts-canary-demo
 ```
 
@@ -61,49 +93,22 @@ oc argo rollouts get rollout rollouts-canary-demo -n rollouts-canary-demo
 bash scripts/start-canary-yellow.sh
 ```
 
-Watch:
-
-```bash
-oc argo rollouts get rollout rollouts-canary-demo -n rollouts-canary-demo --watch
-```
-
-At the first step the rollout pauses at approximately 20% YELLOW.
+The Rollout cannot reach the first manual pause until the 20% Prometheus AnalysisRun succeeds.
 
 ## Promote
 
-```bash
-oc argo rollouts promote rollouts-canary-demo -n rollouts-canary-demo
-```
-
-The remaining 40%, 60%, and 80% steps advance automatically after 20-second pauses.
-
-## Abort
+Only after that analysis succeeds:
 
 ```bash
-oc argo rollouts abort rollouts-canary-demo -n rollouts-canary-demo
+oc argo rollouts promote rollouts-canary-demo   -n rollouts-canary-demo
 ```
 
-After an abort, revert the YELLOW desired-state commit in Git because Argo CD still declares YELLOW as desired.
+The 40%, 60%, and 80% stages each run their own Prometheus AnalysisRun before continuing.
 
 ## Inspect
 
 ```bash
-oc get rs,pod -n rollouts-canary-demo -l app=rollouts-canary-demo -o wide
-oc get svc,route -n rollouts-canary-demo
+oc get analysisrun   -n rollouts-canary-demo   --sort-by=.metadata.creationTimestamp
+
+oc get rs,pod   -n rollouts-canary-demo   -l app=rollouts-canary-demo   -o wide
 ```
-
-## Relationship to the blue/green demo
-
-```text
-Blue/green:
-  active + preview Services
-  0%/100% cutover
-  pre-promotion AnalysisRun
-
-Basic canary:
-  one Service
-  stable + canary ReplicaSets
-  progressive replica-based exposure
-```
-
-For precise traffic percentages, extend this example with OpenShift Service Mesh / Istio traffic routing.
