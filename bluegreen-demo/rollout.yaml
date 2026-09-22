@@ -62,9 +62,20 @@ spec:
           - name: preview-url
             value: http://bluegreen-demo-preview.bluegreen-demo.svc.cluster.local
 
+      # After promotion, validate the candidate through the ACTIVE Service.
+      # A failed/error post-promotion AnalysisRun causes Argo Rollouts to
+      # abort and switch traffic back to the previous stable ReplicaSet.
+      postPromotionAnalysis:
+        templates:
+          - templateName: bluegreen-demo-post-smoke-test
+        args:
+          - name: active-url
+            value: http://bluegreen-demo-active.bluegreen-demo.svc.cluster.local
+
       # Manual gate remains after successful pre-promotion analysis.
       autoPromotionEnabled: false
 
-      # Keep the previous active ReplicaSet alive briefly after the Service
-      # switch to allow Service routing propagation to settle.
-      scaleDownDelaySeconds: 30
+      # scaleDownDelaySeconds is intentionally omitted. With a post-promotion
+      # analysis configured, Argo Rollouts retains the previous stable
+      # ReplicaSet until the post analysis completes (minimum 30 seconds),
+      # preserving the automatic rollback target.

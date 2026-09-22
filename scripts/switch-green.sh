@@ -258,6 +258,7 @@ if [[ "${PREVIEW_ONLY}" == "true" ]]; then
   exit 0
 fi
 
+previous_stable_hash="${active_hash}"
 echo
 echo "==> Promoting GREEN to production"
 oc argo rollouts promote "${APP_NAME}" -n "${NAMESPACE}"
@@ -285,11 +286,74 @@ if (( SECONDS >= deadline )); then
   die "Promotion command ran, but active Service did not switch to GREEN before timeout."
 fi
 
+echo "==> Waiting for post-promotion AnalysisRun"
+deadline=$((SECONDS + TIMEOUT_SECONDS))
+post_analysis_name=""
+post_analysis_status=""
+
+while (( SECONDS < deadline )); do
+  post_analysis_name="$(oc get rollout "${APP_NAME}" \
+    -n "${NAMESPACE}" \
+    -o jsonpath='{.status.blueGreen.postPromotionAnalysisRunStatus.name}' \
+    2>/dev/null || true)"
+
+  post_analysis_status="$(oc get rollout "${APP_NAME}" \
+    -n "${NAMESPACE}" \
+    -o jsonpath='{.status.blueGreen.postPromotionAnalysisRunStatus.status}' \
+    2>/dev/null || true)"
+
+  printf '    post-analysis=%s status=%s\n' \
+    "${post_analysis_name:-pending}" \
+    "${post_analysis_status:-pending}"
+
+  case "${post_analysis_status}" in
+    Successful)
+      break
+      ;;
+    Failed|Error|Inconclusive)
+      echo
+      [[ -z "${post_analysis_name}" ]] || \
+        oc get analysisrun "${post_analysis_name}" -n "${NAMESPACE}" -o yaml || true
+      echo
+      oc get job,pod \
+        -n "${NAMESPACE}" \
+        -l app=bluegreen-demo-post-analysis \
+        -o wide || true
+
+      echo "==> Waiting for Argo Rollouts to restore the previous stable Service selector"
+      rollback_deadline=$((SECONDS + TIMEOUT_SECONDS))
+      while (( SECONDS < rollback_deadline )); do
+        active_hash="$(oc get svc "${APP_NAME}-active" \
+          -n "${NAMESPACE}" \
+          -o jsonpath='{.spec.selector.rollouts-pod-template-hash}' \
+          2>/dev/null || true)"
+
+        [[ -n "${previous_stable_hash}" &&
+           "${active_hash}" == "${previous_stable_hash}" ]] && break
+        sleep "${POLL_SECONDS}"
+      done
+
+      oc argo rollouts get rollout "${APP_NAME}" -n "${NAMESPACE}" || true
+      die "Post-promotion analysis ended with status ${post_analysis_status}. Argo Rollouts aborted the update and should restore production to the previous stable ReplicaSet."
+      ;;
+  esac
+
+  sleep "${POLL_SECONDS}"
+done
+
+if (( SECONDS >= deadline )); then
+  oc argo rollouts get rollout "${APP_NAME}" -n "${NAMESPACE}" || true
+  [[ -z "${post_analysis_name}" ]] || \
+    oc get analysisrun "${post_analysis_name}" -n "${NAMESPACE}" -o yaml || true
+  die "Timed out waiting for the post-promotion analysis."
+fi
+
 echo
-echo "GREEN is now active in production."
+echo "GREEN passed post-promotion analysis and is fully promoted."
 echo "Production URL: https://${active_host}"
+echo "Post AnalysisRun: ${post_analysis_name}"
 echo
 oc argo rollouts get rollout "${APP_NAME}" -n "${NAMESPACE}"
 
 echo
-echo "The previous BLUE ReplicaSet will be scaled down according to scaleDownDelaySeconds."
+echo "The previous BLUE ReplicaSet can now be scaled down by Argo Rollouts."

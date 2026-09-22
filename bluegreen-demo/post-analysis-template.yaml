@@ -1,0 +1,51 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: bluegreen-demo-post-smoke-test
+  namespace: bluegreen-demo
+spec:
+  args:
+    - name: active-url
+
+  metrics:
+    - name: active-http-smoke-test
+      provider:
+        job:
+          metadata:
+            labels:
+              app: bluegreen-demo-post-analysis
+          spec:
+            backoffLimit: 0
+            activeDeadlineSeconds: 30
+            template:
+              metadata:
+                labels:
+                  app: bluegreen-demo-post-analysis
+              spec:
+                restartPolicy: Never
+                securityContext:
+                  seccompProfile:
+                    type: RuntimeDefault
+                containers:
+                  - name: smoke-test
+                    image: quay.io/curl/curl:8.22.0
+                    imagePullPolicy: IfNotPresent
+                    securityContext:
+                      allowPrivilegeEscalation: false
+                      capabilities:
+                        drop:
+                          - ALL
+                      runAsNonRoot: true
+                    command:
+                      - /bin/sh
+                      - -c
+                      - |
+                        set -eu
+                        url="{{args.active-url}}"
+                        echo "Post-promotion production smoke test: ${url}"
+                        for attempt in 1 2 3 4 5; do
+                          echo "HTTP check ${attempt}/5"
+                          curl --fail --silent --show-error --max-time 5 "${url}" >/dev/null
+                          sleep 2
+                        done
+                        echo "Post-promotion production smoke test passed."
