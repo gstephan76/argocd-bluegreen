@@ -1,0 +1,10 @@
+apiVersion: argoproj.io/v1beta1
+kind: ArgoCD
+metadata:
+  name: openshift-gitops
+  namespace: openshift-gitops
+spec:
+  server:
+    # Enable the Argo Rollouts extension in the Argo CD Web UI.
+    # Red Hat OpenShift GitOps defaults this field to false.
+    enableRolloutsUI: true

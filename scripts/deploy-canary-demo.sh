@@ -17,8 +17,13 @@ cd "$ROOT"
 
 oc whoami >/dev/null 2>&1 || die "Not logged in to OpenShift"
 oc get crd applications.argoproj.io >/dev/null
+oc get crd argocds.argoproj.io >/dev/null
 oc get crd rollouts.argoproj.io >/dev/null
+oc get crd rolloutmanagers.argoproj.io >/dev/null
 oc argo rollouts version >/dev/null 2>&1 || die "Argo Rollouts CLI plugin is required"
+
+echo "==> Applying Argo Rollouts bootstrap and enabling the Argo CD Rollouts UI"
+oc apply -k bootstrap
 
 echo "==> Applying Argo CD Application"
 oc apply -f argocd/application-canary.yaml
