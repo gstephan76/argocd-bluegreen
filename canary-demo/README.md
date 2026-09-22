@@ -1,114 +1,82 @@
 # OpenShift GitOps + Argo Rollouts Canary Example
 
-This example complements the repository's blue/green demo with a **canary Rollout managed by Argo CD and gated by Prometheus AnalysisRuns**.
+This demo uses a fully automatic **Prometheus-gated canary**. There is no manual approval step.
 
-The canary does not advance merely because a pause expires. At every weight, Argo Rollouts runs an inline AnalysisRun and proceeds only when OpenShift Prometheus reports that a Blackbox probe of the canary-only Service returns HTTP **200**.
+Because this is a basic canary without a traffic router, six replicas are used so the controller can represent approximately one-third and two-thirds as exact pod ratios:
+
+```text
+33% -> 2 canary + 4 stable
+66% -> 4 canary + 2 stable
+100% -> 6 canary
+```
 
 ## Flow
 
 ```text
-BLUE stable
-   |
-Git changes image to YELLOW
-   |
-Argo CD sync
-   |
-20% canary
-   |
-Prometheus AnalysisRun
-probe_http_status_code == 200
-probe_success == 1
-3 consecutive samples
-   |
-   +-- failure --> Rollout aborts
-   |
-   +-- success
-          |
-       manual pause
-          |
-       promote
-          |
-40% -> Analysis -> 20s
-60% -> Analysis -> 20s
-80% -> Analysis -> 20s
-          |
-       100% YELLOW
+new canary revision
+      |
+      v
+33% exposure
+      |
+3 x HTTP 200
+      |
+      v
+66% exposure
+      |
+3 x HTTP 200
+      |
+      v
+100% exposure
+      |
+3 x HTTP 200
+      |
+      v
+new ReplicaSet becomes stable
 ```
+
+A failed analysis stops progression. No timed pause and no manual `promote` is used.
+
+The first canary weight must be established before the first analysis because this demo has no traffic router. In basic canary mode, Argo Rollouts controls the canary replica count to approximate `setWeight`; `setCanaryScale` for an unexposed preflight canary requires traffic routing.
 
 ## Exact HTTP 200 gate
 
-OpenShift HAProxy router metrics group responses into status classes such as `2xx` and therefore cannot distinguish `200` from another `2xx` status. This demo uses Prometheus Blackbox Exporter instead.
-
-The Blackbox module is configured with:
-
-```yaml
-valid_status_codes:
-  - 200
-```
-
-OpenShift user-workload Prometheus scrapes the exporter through a `ServiceMonitor`. The AnalysisTemplate queries OpenShift Thanos for:
-
-```text
-probe_http_status_code == 200
-probe_success == 1
-```
-
-Each inline AnalysisRun requires three consecutive successful measurements. An empty Prometheus result or a non-200 result fails closed.
-
-The Blackbox target is:
+The Blackbox Exporter probes only:
 
 ```text
 http://rollouts-canary-demo-canary.rollouts-canary-demo.svc.cluster.local/color
 ```
 
-`rollouts-canary-demo-canary` is controlled by Argo Rollouts and selects only the current canary ReplicaSet. Stable pods therefore cannot hide a broken canary.
+The canary-only Service is controlled by Argo Rollouts, so stable pods cannot mask a failing candidate.
 
-## Prerequisites
+The AnalysisTemplate requires three successful Prometheus measurements for both:
 
-OpenShift user-workload monitoring must be enabled:
-
-```bash
-oc get statefulset prometheus-user-workload   -n openshift-user-workload-monitoring
-
-oc get service thanos-querier   -n openshift-monitoring
+```text
+probe_http_status_code == 200
+probe_success == 1
 ```
+
+With `failureLimit: 1`, the first failed measurement causes the analysis to fail.
 
 ## Deploy
 
 ```bash
-cd ~/Documents/POCs/ArgoCD
 bash scripts/deploy-canary-demo.sh
 ```
 
-Verify:
-
-```bash
-oc get analysistemplate,servicemonitor -n rollouts-canary-demo
-oc argo rollouts get rollout rollouts-canary-demo -n rollouts-canary-demo
-```
-
-## Start BLUE -> YELLOW
+## Start a fresh rollout
 
 ```bash
 bash scripts/start-canary-yellow.sh
 ```
 
-The Rollout cannot reach the first manual pause until the 20% Prometheus AnalysisRun succeeds.
+The script changes the Git-managed `demo-rollout-revision` pod-template annotation on every invocation. That creates a fresh Rollout revision even when the image remains `argoproj/rollouts-demo:yellow`.
 
-## Promote
-
-Only after that analysis succeeds:
-
-```bash
-oc argo rollouts promote rollouts-canary-demo   -n rollouts-canary-demo
-```
-
-The 40%, 60%, and 80% stages each run their own Prometheus AnalysisRun before continuing.
+The script then waits for the automatic 33% -> 66% -> 100% Prometheus-gated rollout to complete.
 
 ## Inspect
 
 ```bash
-oc get analysisrun   -n rollouts-canary-demo   --sort-by=.metadata.creationTimestamp
+oc argo rollouts get rollout rollouts-canary-demo   -n rollouts-canary-demo   --watch
 
-oc get rs,pod   -n rollouts-canary-demo   -l app=rollouts-canary-demo   -o wide
+oc get analysisrun   -n rollouts-canary-demo   --sort-by=.metadata.creationTimestamp
 ```

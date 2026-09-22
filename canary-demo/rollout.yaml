@@ -4,7 +4,9 @@ metadata:
   name: rollouts-canary-demo
   namespace: rollouts-canary-demo
 spec:
-  replicas: 5
+  # Six replicas let the basic (no traffic-router) canary approximate
+  # one-third and two-thirds with exact pod ratios: 2/6 and 4/6.
+  replicas: 6
   revisionHistoryLimit: 2
   selector:
     matchLabels:
@@ -14,7 +16,9 @@ spec:
       labels:
         app: rollouts-canary-demo
       annotations:
-        demo-rollout-revision: "prometheus-test-1"
+        # Changing this pod-template annotation intentionally creates a fresh
+        # Rollout revision without changing the demo image.
+        demo-rollout-revision: "prometheus-test-2"
     spec:
       containers:
         - name: rollouts-demo
@@ -45,31 +49,19 @@ spec:
       maxUnavailable: 0
       maxSurge: 1
       steps:
-        # Every increase in canary weight is gated by a blocking Prometheus
-        # AnalysisRun. The only manual gate is after the initial 20% stage.
-        - setWeight: 20
-        - analysis:
-            templates:
-              - templateName: rollouts-canary-demo-prometheus
-        - pause: {}
-
-        - setWeight: 40
+        # Basic canary cannot probe an unexposed canary before the first
+        # setWeight without a traffic router. Therefore each exposure level
+        # is held until its three HTTP-200 measurements succeed.
+        - setWeight: 33
         - analysis:
             templates:
               - templateName: rollouts-canary-demo-prometheus
 
-        - setWeight: 60
+        - setWeight: 66
         - analysis:
             templates:
               - templateName: rollouts-canary-demo-prometheus
 
-        - setWeight: 80
-        - analysis:
-            templates:
-              - templateName: rollouts-canary-demo-prometheus
-
-        # Require one final successful HTTP-200 analysis at full canary
-        # exposure before the new ReplicaSet is declared stable.
         - setWeight: 100
         - analysis:
             templates:
