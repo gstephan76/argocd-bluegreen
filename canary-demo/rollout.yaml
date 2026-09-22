@@ -18,7 +18,7 @@ spec:
       annotations:
         # Changing this pod-template annotation intentionally creates a fresh
         # Rollout revision without changing the demo image.
-        demo-rollout-revision: "prometheus-test-2"
+        demo-rollout-revision: "prometheus-test-3"
     spec:
       containers:
         - name: rollouts-demo
@@ -66,3 +66,7 @@ spec:
         - analysis:
             templates:
               - templateName: rollouts-canary-demo-prometheus
+
+        # The 100% canary has passed all Prometheus gates but is not declared
+        # stable until an operator explicitly promotes this final pause.
+        - pause: {}

@@ -106,7 +106,7 @@ while (( SECONDS < deadline )); do
 done
 (( SECONDS < deadline )) || die "Timed out waiting for a new Rollout revision"
 
-echo "==> Automatic progression: 33% -> analysis -> 66% -> analysis -> 100% -> analysis"
+echo "==> Automatic validation: 33% -> HTTP-200 gate -> 66% -> HTTP-200 gate -> 100% -> HTTP-200 gate -> final pause"
 deadline=$((SECONDS + TIMEOUT_SECONDS))
 while (( SECONDS < deadline )); do
   phase="$(oc get rollout "$APP_NAME" \
@@ -134,15 +134,20 @@ while (( SECONDS < deadline )); do
     die "Prometheus HTTP-200 gate failed; rollout did not progress"
   fi
 
+  # This strategy has a single pause, after the successful 100% analysis.
+  if [[ "$phase" == "Paused" ]]; then
+    break
+  fi
+
   if [[ "$phase" == "Healthy" &&
         -n "$stable" &&
         "$stable" == "$current" ]]; then
-    break
+    die "Rollout became stable without reaching the expected final approval pause"
   fi
 
   sleep "$POLL_SECONDS"
 done
-(( SECONDS < deadline )) || die "Timed out waiting for automatic canary completion"
+(( SECONDS < deadline )) || die "Timed out waiting for the final approval pause"
 
 echo
 echo "==> AnalysisRuns"
@@ -152,5 +157,11 @@ echo
 oc argo rollouts get rollout "$APP_NAME" -n "$NAMESPACE"
 
 echo
-echo "Canary rollout completed automatically."
-echo "Progression required successful HTTP-200 analysis at 33%, 66%, and 100%."
+echo "All Prometheus gates passed at 33%, 66%, and 100%."
+echo "The canary is at 100% exposure but has NOT been declared stable."
+echo
+echo "Final manual approval:"
+echo "  bash scripts/promote-canary-stable.sh"
+echo
+echo "Direct equivalent:"
+echo "  oc argo rollouts promote $APP_NAME -n $NAMESPACE"
