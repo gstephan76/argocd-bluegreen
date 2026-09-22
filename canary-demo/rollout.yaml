@@ -13,6 +13,8 @@ spec:
     metadata:
       labels:
         app: rollouts-canary-demo
+      annotations:
+        demo-rollout-revision: "prometheus-test-1"
     spec:
       containers:
         - name: rollouts-demo
