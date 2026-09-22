@@ -16,6 +16,18 @@ Six replicas make the basic canary weights map cleanly to pod counts:
 100% -> 6 canary
 ```
 
+The seven Rollout steps are:
+
+```text
+0  setWeight 33
+1  analysis
+2  setWeight 66
+3  analysis
+4  setWeight 100
+5  analysis
+6  final manual pause
+```
+
 The complete flow is:
 
 ```text
@@ -38,6 +50,7 @@ fresh canary revision
         |
         v
  FINAL MANUAL PAUSE
+     step 6/7
         |
  operator promotes
         |
@@ -47,115 +60,253 @@ fresh canary revision
 
 If any inline analysis fails, the rollout does not progress to the next weight.
 
-## What is being tested
+## Who generates the HTTP traffic?
 
-The existing public Route is unchanged and is useful for demonstrating the application from a browser or with `curl`.
+No browser refresh and no manual `curl` is required for the rollout to progress.
 
-The promotion gate itself deliberately probes the canary-only Service:
+OpenShift user-workload Prometheus scrapes the Blackbox Exporter through the `ServiceMonitor` every five seconds:
 
 ```text
-http://rollouts-canary-demo-canary.rollouts-canary-demo.svc.cluster.local/color
+OpenShift user-workload Prometheus
+        |
+        | scrape every 5 seconds
+        v
+Blackbox Exporter /probe
+        |
+        | performs a real HTTP GET /color
+        v
+rollouts-canary-demo-canary Service
+        |
+        v
+current canary ReplicaSet only
 ```
 
-Argo Rollouts owns that Service selector and points it only at the current canary ReplicaSet. Stable pods therefore cannot hide a broken candidate.
+The `ServiceMonitor` contains:
 
-Blackbox Exporter is scraped by OpenShift user-workload Prometheus. The AnalysisTemplate requires three successful measurements for both:
+```yaml
+interval: 5s
+path: /probe
+params:
+  module:
+    - http_200
+  target:
+    - http://rollouts-canary-demo-canary.rollouts-canary-demo.svc.cluster.local/color
+```
+
+Each Prometheus scrape therefore causes Blackbox Exporter to make a real HTTP request to the canary-only Service.
+
+Blackbox returns metrics such as:
+
+```text
+probe_http_status_code 200
+probe_success 1
+```
+
+Argo Rollouts does not generate the application traffic. Its AnalysisRun queries Prometheus/Thanos every ten seconds and evaluates the metrics collected by Prometheus.
+
+The AnalysisTemplate requires three successful measurements for both:
 
 ```text
 probe_http_status_code == 200
 probe_success == 1
 ```
 
-With `failureLimit: 1`, a failed measurement causes the analysis to fail.
+With `failureLimit: 1`, a failed measurement causes that analysis to fail and the rollout does not advance to the next weight.
 
-## 1. Deploy or reconcile the demo
+## Why the internal canary Service is used
 
-From the repository root:
+The promotion gate probes:
+
+```text
+http://rollouts-canary-demo-canary.rollouts-canary-demo.svc.cluster.local/color
+```
+
+Argo Rollouts owns the selector of this Service and adds the current canary ReplicaSet hash. Conceptually:
+
+```yaml
+selector:
+  app: rollouts-canary-demo
+  rollouts-pod-template-hash: <current-canary-hash>
+```
+
+Therefore the probe reaches only the current canary ReplicaSet. Stable pods cannot mask a broken candidate.
+
+The normal application Service and the existing public Route are left unchanged. During a gradual rollout they can serve both stable and canary pods, which is correct for application traffic but unsuitable as the promotion health gate.
+
+## Scripted demo
+
+Run from the repository root:
 
 ```bash
 cd ~/Documents/POCs/ArgoCD
+```
 
+### 1. Deploy or reconcile
+
+```bash
 bash scripts/deploy-canary-demo.sh
 ```
 
-The deploy script ensures user-workload monitoring is available, applies the Rollouts bootstrap and Prometheus access resources, reconciles the Argo CD Application, and waits for the Blackbox Exporter.
-
-Verify the main resources:
-
-```bash
-oc get rollout,analysistemplate,analysisrun   -n rollouts-canary-demo
-
-oc get servicemonitor,svc,route   -n rollouts-canary-demo
-```
-
-## 2. Open or curl the application
-
-Get the existing public Route:
-
-```bash
-HOST="$(oc get route rollouts-canary-demo   -n rollouts-canary-demo   -o jsonpath='{.spec.host}')"
-
-echo "https://${HOST}"
-```
-
-Check the public application:
-
-```bash
-curl -sk   -o /dev/null   -w 'HTTP %{http_code}\n'   "https://${HOST}/"
-```
-
-A normal application response is:
-
-```text
-HTTP 200
-```
-
-This public Route check is useful for the demo, but it is not the promotion signal because the normal Service can include both stable and canary pods while a rollout is in progress.
-
-## 3. Start a fresh canary revision
-
-Run:
+### 2. Start a fresh canary revision
 
 ```bash
 bash scripts/start-canary-yellow.sh
 ```
 
-The script changes the Git-managed `demo-rollout-revision` pod-template annotation, commits and pushes the change, waits for the exact Argo CD revision, and then watches the rollout through:
+The script creates a new Git-managed pod-template revision and waits while the rollout progresses automatically:
 
 ```text
 33% -> HTTP-200 analysis
 66% -> HTTP-200 analysis
 100% -> HTTP-200 analysis
-final pause
+step 6/7 -> final pause
 ```
 
 No manual action is required between 33%, 66%, and 100%.
 
-Watch the rollout in another terminal if desired:
+### 3. Final operator approval
+
+After the script reports that all three Prometheus gates passed:
 
 ```bash
-oc argo rollouts get rollout rollouts-canary-demo   -n rollouts-canary-demo   --watch
+bash scripts/promote-canary-stable.sh
 ```
 
-Watch the AnalysisRuns:
+This is the only manual approval in the rollout.
+
+## Manual demo without helper scripts
+
+The following performs the same demo without `deploy-canary-demo.sh`, `start-canary-yellow.sh`, or `promote-canary-stable.sh`.
+
+Run all commands from the repository root:
 
 ```bash
-watch -n 2 '
-oc get analysisrun   -n rollouts-canary-demo   --sort-by=.metadata.creationTimestamp
-'
+cd ~/Documents/POCs/ArgoCD
 ```
 
-## 4. Verify the canary HTTP probe directly
+### 1. Verify access and required APIs
 
-The Blackbox Exporter automatically generates the HTTP requests used by Prometheus. You do not need to refresh the browser to satisfy the gate.
+```bash
+oc whoami
 
-To inspect exactly what Blackbox sees, port-forward it:
+oc get crd applications.argoproj.io
+oc get crd argocds.argoproj.io
+oc get crd rollouts.argoproj.io
+oc get crd rolloutmanagers.argoproj.io
+oc get crd analysistemplates.argoproj.io
+oc get crd analysisruns.argoproj.io
+oc get crd servicemonitors.monitoring.coreos.com
+
+oc argo rollouts version
+```
+
+### 2. Enable user-workload monitoring
+
+Inspect existing cluster monitoring configuration first:
+
+```bash
+oc get configmap cluster-monitoring-config   -n openshift-monitoring   -o yaml
+```
+
+If the ConfigMap is absent, or if its only setting is `enableUserWorkload: false`, apply:
+
+```bash
+oc apply   -f platform-monitoring/user-workload-monitoring.yaml
+```
+
+If `cluster-monitoring-config` already contains unrelated settings, merge:
+
+```yaml
+enableUserWorkload: true
+```
+
+into its existing `data.config.yaml` instead of replacing the ConfigMap.
+
+Wait for user-workload Prometheus:
+
+```bash
+oc rollout status statefulset/prometheus-user-workload   -n openshift-user-workload-monitoring   --timeout=600s
+```
+
+Verify Thanos:
+
+```bash
+oc get service thanos-querier   -n openshift-monitoring
+```
+
+### 3. Apply Rollouts bootstrap and Prometheus access
+
+```bash
+oc apply -k bootstrap
+
+oc apply   -f bootstrap/canary-prometheus-access.yaml
+```
+
+Verify that the ServiceAccount token exists:
+
+```bash
+oc get secret rollouts-canary-prometheus-token   -n rollouts-canary-demo   -o jsonpath='{.data.token}{"\n"}'
+```
+
+The output should be non-empty.
+
+### 4. Apply the Argo CD Application
+
+```bash
+oc apply   -f argocd/application-canary.yaml
+```
+
+Force a hard refresh:
+
+```bash
+oc annotate applications.argoproj.io rollouts-canary-demo   -n openshift-gitops   argocd.argoproj.io/refresh=hard   --overwrite
+```
+
+Check synchronization:
+
+```bash
+oc get applications.argoproj.io rollouts-canary-demo   -n openshift-gitops   -o jsonpath='sync={.status.sync.status} health={.status.health.status} revision={.status.sync.revision}{"\n"}'
+```
+
+Wait for Blackbox Exporter:
+
+```bash
+oc rollout status deployment/rollouts-canary-blackbox   -n rollouts-canary-demo   --timeout=300s
+```
+
+Verify the analysis resources:
+
+```bash
+oc get analysistemplate rollouts-canary-demo-prometheus   -n rollouts-canary-demo
+
+oc get servicemonitor rollouts-canary-blackbox   -n rollouts-canary-demo
+
+oc get service rollouts-canary-demo-canary   -n rollouts-canary-demo
+```
+
+### 5. Verify automatic probe traffic
+
+Inspect the ServiceMonitor:
+
+```bash
+oc get servicemonitor rollouts-canary-blackbox   -n rollouts-canary-demo   -o yaml
+```
+
+Confirm that it points to:
+
+```text
+http://rollouts-canary-demo-canary.rollouts-canary-demo.svc.cluster.local/color
+```
+
+Optionally verify Blackbox directly.
+
+Terminal 1:
 
 ```bash
 oc port-forward   -n rollouts-canary-demo   svc/rollouts-canary-blackbox   9115:9115
 ```
 
-In another terminal:
+Terminal 2:
 
 ```bash
 curl -sS --get   'http://127.0.0.1:9115/probe'   --data-urlencode 'module=http_200'   --data-urlencode 'target=http://rollouts-canary-demo-canary.rollouts-canary-demo.svc.cluster.local/color'   | rg '^(probe_http_status_code|probe_success) '
@@ -168,43 +319,232 @@ probe_http_status_code 200
 probe_success 1
 ```
 
-A completed analysis should contain three successful `200` measurements and three successful `probe_success=1` measurements.
+This manual `curl` is diagnostic only. Prometheus already generates these probes automatically every five seconds.
 
-## 5. Final manual promotion to stable
-
-After all three weight stages have passed their Prometheus gates, the Rollout intentionally stops at the final pause.
-
-At that point the candidate is at 100% exposure, but it is not yet the stable ReplicaSet.
-
-Promote it with:
+### 6. Verify the existing public Route
 
 ```bash
-bash scripts/promote-canary-stable.sh
+HOST="$(oc get route rollouts-canary-demo   -n rollouts-canary-demo   -o jsonpath='{.spec.host}')"
+
+echo "https://${HOST}"
 ```
 
-The direct Argo Rollouts equivalent is:
+Check it:
+
+```bash
+curl -sk   -o /dev/null   -w 'HTTP %{http_code}\n'   "https://${HOST}/"
+```
+
+Expected for a healthy application:
+
+```text
+HTTP 200
+```
+
+The public Route is not the promotion gate because its normal Service can reach stable and canary pods during rollout.
+
+### 7. Create a fresh GitOps canary revision
+
+Do not patch the live Rollout directly; Argo CD self-heal owns the desired state.
+
+Generate a fresh annotation value:
+
+```bash
+TRIGGER="prometheus-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+
+sed -i -E   "s#demo-rollout-revision: ".*"#demo-rollout-revision: "$TRIGGER"#"   canary-demo/rollout.yaml
+```
+
+Commit and push:
+
+```bash
+git add canary-demo/rollout.yaml
+git diff --cached --check
+git commit -m "Trigger Prometheus-gated canary revision"
+git push origin main
+```
+
+Record the exact Git revision:
+
+```bash
+REV="$(git rev-parse HEAD)"
+echo "$REV"
+```
+
+Force Argo CD to refresh:
+
+```bash
+oc annotate applications.argoproj.io rollouts-canary-demo   -n openshift-gitops   argocd.argoproj.io/refresh=hard   --overwrite
+```
+
+Verify Argo CD reached that exact commit:
+
+```bash
+oc get applications.argoproj.io rollouts-canary-demo   -n openshift-gitops   -o jsonpath='sync={.status.sync.status} revision={.status.sync.revision}{"\n"}'
+```
+
+The reported revision should equal `$REV`.
+
+### 8. Watch the automatic rollout
+
+Watch the Rollout:
+
+```bash
+oc argo rollouts get rollout rollouts-canary-demo   -n rollouts-canary-demo   --watch
+```
+
+In another terminal, watch AnalysisRuns:
+
+```bash
+watch -n 2 '
+oc get analysisrun   -n rollouts-canary-demo   --sort-by=.metadata.creationTimestamp
+'
+```
+
+Expected progression:
+
+```text
+step 0/7  33%
+step 1/7  AnalysisRun
+step 2/7  66%
+step 3/7  AnalysisRun
+step 4/7  100%
+step 5/7  AnalysisRun
+step 6/7  Paused
+```
+
+No operator action is required until step `6/7`.
+
+### 9. Verify canary Service isolation
+
+During the active rollout:
+
+```bash
+oc get service rollouts-canary-demo-canary   -n rollouts-canary-demo   -o jsonpath='{.spec.selector}{"\n"}'
+```
+
+The selector should include:
+
+```text
+rollouts-pod-template-hash
+```
+
+Compare it with the ReplicaSets:
+
+```bash
+oc get rs   -n rollouts-canary-demo   -l app=rollouts-canary-demo   --show-labels
+```
+
+The hash on the canary Service should match the current candidate ReplicaSet, not the old stable ReplicaSet.
+
+### 10. Inspect the successful measurements
+
+List AnalysisRuns:
+
+```bash
+oc get analysisrun   -n rollouts-canary-demo   --sort-by=.metadata.creationTimestamp
+```
+
+Inspect the newest AnalysisRun:
+
+```bash
+LATEST_ANALYSIS="$(oc get analysisrun   -n rollouts-canary-demo   --sort-by=.metadata.creationTimestamp   -o jsonpath='{.items[-1:].metadata.name}')"
+
+oc get analysisrun "$LATEST_ANALYSIS"   -n rollouts-canary-demo   -o jsonpath='
+{range .status.metricResults[*]}
+METRIC: {.name}
+PHASE: {.phase}
+SUCCESS: {.successful}
+FAILED: {.failed}
+{range .measurements[*]}
+  value={.value} phase={.phase} message={.message}
+{end}
+{end}'
+```
+
+A successful gate contains three `200` measurements for `canary-http-status-200` and three `1` measurements for `canary-probe-success`.
+
+### 11. Verify the final pause
+
+At step `6/7`:
+
+```bash
+oc get rollout rollouts-canary-demo   -n rollouts-canary-demo   -o jsonpath='phase={.status.phase} step={.status.currentStepIndex} stableRS={.status.stableRS} currentPodHash={.status.currentPodHash}{"\n"}'
+```
+
+Expected:
+
+```text
+phase=Paused
+step=6
+```
+
+At this point the candidate has passed the 33%, 66%, and 100% HTTP-200 gates but has not yet been declared stable.
+
+### 12. Promote the validated canary to stable
+
+Display the state first:
+
+```bash
+oc argo rollouts get rollout rollouts-canary-demo   -n rollouts-canary-demo
+```
+
+Promote exactly one step:
 
 ```bash
 oc argo rollouts promote rollouts-canary-demo   -n rollouts-canary-demo
 ```
 
-Do not use `--full` for this demo.
+Do not use `--full`.
 
-The helper waits until:
+Wait for the rollout to become healthy:
+
+```bash
+oc wait   --for=jsonpath='{.status.phase}'=Healthy   rollout/rollouts-canary-demo   -n rollouts-canary-demo   --timeout=300s
+```
+
+Verify stable identity:
+
+```bash
+oc get rollout rollouts-canary-demo   -n rollouts-canary-demo   -o jsonpath='phase={.status.phase} stableRS={.status.stableRS} currentPodHash={.status.currentPodHash}{"\n"}'
+```
+
+A completed rollout should show:
 
 ```text
-phase == Healthy
+phase=Healthy
 stableRS == currentPodHash
 ```
 
-and then prints the final Rollout state.
-
-## 6. Final verification
+Final display:
 
 ```bash
 oc argo rollouts get rollout rollouts-canary-demo   -n rollouts-canary-demo
-
-oc get analysisrun   -n rollouts-canary-demo   --sort-by=.metadata.creationTimestamp
 ```
 
-A successful demo ends with the new ReplicaSet marked stable and successful AnalysisRuns for the 33%, 66%, and 100% HTTP-200 gates.
+## Quick reference
+
+Scripted execution:
+
+```bash
+bash scripts/deploy-canary-demo.sh
+bash scripts/start-canary-yellow.sh
+bash scripts/promote-canary-stable.sh
+```
+
+Traffic and decision path:
+
+```text
+Prometheus --5s scrape--> Blackbox --HTTP GET--> canary-only Service
+                                                    |
+                                                    v
+                                             canary ReplicaSet
+                                                    |
+                                                    v
+                                            HTTP 200 / success
+                                                    |
+                                                    v
+Argo Rollouts <--10s PromQL query-- Thanos/Prometheus
+```
+
+The only manual rollout decision is the final promotion at step `6/7`.
