@@ -13,4 +13,5 @@ data:
           method: GET
           valid_status_codes:
             - 200
+          follow_redirects: false
           preferred_ip_protocol: ip4

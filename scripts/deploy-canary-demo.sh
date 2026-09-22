@@ -6,6 +6,7 @@ ARGOCD_NAMESPACE="${ARGOCD_NAMESPACE:-openshift-gitops}"
 APP_NAME="${APP_NAME:-rollouts-canary-demo}"
 ANALYSIS_TEMPLATE="${ANALYSIS_TEMPLATE:-rollouts-canary-demo-prometheus}"
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-300}"
+MONITORING_TIMEOUT_SECONDS="${MONITORING_TIMEOUT_SECONDS:-600}"
 POLL_SECONDS="${POLL_SECONDS:-5}"
 
 die(){ echo "ERROR: $*" >&2; exit 1; }
@@ -25,9 +26,35 @@ done
 
 oc argo rollouts version >/dev/null 2>&1 || die "Argo Rollouts CLI plugin is required"
 
-if ! oc get statefulset prometheus-user-workload   -n openshift-user-workload-monitoring >/dev/null 2>&1; then
-  die "OpenShift user-workload monitoring is not enabled. The canary Prometheus analysis requires prometheus-user-workload."
+[[ -f platform-monitoring/user-workload-monitoring.yaml ]] ||   die "platform-monitoring/user-workload-monitoring.yaml not found"
+
+echo "==> Ensuring OpenShift user-workload monitoring is enabled"
+existing_monitoring_config="$(oc get configmap cluster-monitoring-config   -n openshift-monitoring   -o jsonpath='{.data.config\.yaml}' 2>/dev/null || true)"
+
+if [[ -z "$existing_monitoring_config" ]]; then
+  oc apply -f platform-monitoring/user-workload-monitoring.yaml
+elif [[ "$existing_monitoring_config" == *"enableUserWorkload: true"* ]]; then
+  echo "    user-workload monitoring is already enabled"
+elif [[ "$existing_monitoring_config" == "enableUserWorkload: false" ||         "$existing_monitoring_config" == $'enableUserWorkload: false\n' ]]; then
+  oc apply -f platform-monitoring/user-workload-monitoring.yaml
+else
+  echo "Existing openshift-monitoring/cluster-monitoring-config:" >&2
+  printf '%s\n' "$existing_monitoring_config" >&2
+  die "Refusing to overwrite existing monitoring settings. Merge 'enableUserWorkload: true' into data.config.yaml."
 fi
+
+echo "==> Waiting for prometheus-user-workload"
+deadline=$((SECONDS + MONITORING_TIMEOUT_SECONDS))
+while (( SECONDS < deadline )); do
+  if oc get statefulset prometheus-user-workload     -n openshift-user-workload-monitoring >/dev/null 2>&1; then
+    break
+  fi
+  echo "    waiting for prometheus-user-workload StatefulSet"
+  sleep "$POLL_SECONDS"
+done
+(( SECONDS < deadline )) || die "Timed out waiting for prometheus-user-workload"
+
+oc rollout status statefulset/prometheus-user-workload   -n openshift-user-workload-monitoring   --timeout="${MONITORING_TIMEOUT_SECONDS}s"
 
 oc get service thanos-querier   -n openshift-monitoring >/dev/null 2>&1 ||   die "OpenShift Thanos Querier service was not found."
 

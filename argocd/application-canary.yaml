@@ -12,6 +12,16 @@ spec:
   destination:
     server: https://kubernetes.default.svc
     namespace: rollouts-canary-demo
+
+  # Argo Rollouts owns this selector on the canary-only Service.
+  ignoreDifferences:
+    - group: ""
+      kind: Service
+      name: rollouts-canary-demo-canary
+      namespace: rollouts-canary-demo
+      jqPathExpressions:
+        - '.spec.selector."rollouts-pod-template-hash"'
+
   syncPolicy:
     automated:
       prune: true
@@ -19,3 +29,4 @@ spec:
     syncOptions:
       - CreateNamespace=true
       - ApplyOutOfSyncOnly=true
+      - RespectIgnoreDifferences=true
