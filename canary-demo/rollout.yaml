@@ -18,7 +18,7 @@ spec:
       annotations:
         # Changing this pod-template annotation intentionally creates a fresh
         # Rollout revision without changing the demo image.
-        demo-rollout-revision: "prometheus-test-3"
+        demo-rollout-revision: "prometheus-20260922T221056Z-2521906"
     spec:
       containers:
         - name: rollouts-demo
