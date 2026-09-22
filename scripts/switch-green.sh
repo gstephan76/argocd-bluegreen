@@ -79,6 +79,7 @@ case "${current_image}" in
     git diff --cached --check
     git commit -m "Deploy green preview"
     git push origin "${branch}"
+
     ;;
   argoproj/rollouts-demo:green)
     echo "==> Git already requests GREEN; no image commit is required."
@@ -89,6 +90,12 @@ case "${current_image}" in
 esac
 
 desired_revision="$(git rev-parse HEAD)"
+
+echo "==> Requesting Argo CD hard refresh for ${desired_revision:0:12}"
+oc annotate applications.argoproj.io "${APP_NAME}" \
+  -n "${ARGOCD_NAMESPACE}" \
+  argocd.argoproj.io/refresh=hard \
+  --overwrite >/dev/null
 
 echo "==> Waiting for Argo CD to sync revision ${desired_revision:0:12}"
 deadline=$((SECONDS + TIMEOUT_SECONDS))

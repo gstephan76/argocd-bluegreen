@@ -20,6 +20,40 @@ need() {
   command -v "$1" >/dev/null 2>&1 || die "Required command not found: $1"
 }
 
+app_revision() {
+  oc get applications.argoproj.io "${APP_NAME}" \
+    -n "${ARGOCD_NAMESPACE}" \
+    -o jsonpath='{.status.sync.revision}' 2>/dev/null || true
+}
+
+wait_for_analysis_template() {
+  local template_name="$1"
+  local stage="$2"
+  local deadline
+  local current_revision
+
+  echo "==> Verifying the ${stage} AnalysisTemplate"
+  deadline=$((SECONDS + TIMEOUT_SECONDS))
+
+  while (( SECONDS < deadline )); do
+    if oc get analysistemplate "${template_name}" \
+      -n "${NAMESPACE}" >/dev/null 2>&1; then
+      echo "    AnalysisTemplate ${template_name} is present."
+      return 0
+    fi
+
+    current_revision="$(app_revision)"
+    printf '    waiting for %s; Argo CD revision=%s\n' \
+      "${template_name}" "${current_revision:0:12}"
+
+    sleep "${POLL_SECONDS}"
+  done
+
+  oc get applications.argoproj.io "${APP_NAME}" \
+    -n "${ARGOCD_NAMESPACE}" -o yaml || true
+  die "Timed out waiting for AnalysisTemplate ${template_name}."
+}
+
 need oc
 need git
 
@@ -34,6 +68,41 @@ cd "${REPO_ROOT}"
 [[ -f bluegreen-demo/post-analysis-template.yaml ]] || die "bluegreen-demo/post-analysis-template.yaml not found."
 
 oc whoami >/dev/null 2>&1 || die "Not logged in to an OpenShift cluster. Run 'oc login' first."
+
+branch="$(git branch --show-current)"
+[[ -n "${branch}" ]] || die "Detached HEAD is not supported."
+git remote get-url origin >/dev/null 2>&1 || die "Git remote 'origin' is not configured."
+
+if ! git diff --quiet || ! git diff --cached --quiet; then
+  die "Tracked Git changes are present. Commit/stash them before deploying so local manifests and GitOps desired state cannot diverge."
+fi
+
+echo "==> Refreshing origin/${branch}"
+git fetch origin
+
+if git show-ref --verify --quiet "refs/remotes/origin/${branch}"; then
+  read -r behind ahead < <(
+    git rev-list --left-right --count "origin/${branch}...HEAD"
+  )
+
+  if (( behind > 0 )); then
+    die "Local ${branch} is behind origin/${branch} by ${behind} commit(s). Run: git pull --ff-only"
+  fi
+
+  if (( ahead > 0 )); then
+    die "Local ${branch} is ahead of origin/${branch} by ${ahead} commit(s). Push first."
+  fi
+fi
+
+desired_revision="$(git rev-parse HEAD)"
+desired_image="$(awk '/^[[:space:]]*image:[[:space:]]+argoproj\/rollouts-demo:/ {print $2; exit}' \
+  bluegreen-demo/rollout.yaml)"
+
+[[ -n "${desired_image}" ]] || \
+  die "Could not determine desired image from bluegreen-demo/rollout.yaml."
+
+echo "==> Target Git revision: ${desired_revision}"
+echo "==> Desired image: ${desired_image}"
 
 echo "==> Verifying required CRDs"
 for crd in \
@@ -50,7 +119,7 @@ repo_url="$(awk '/^[[:space:]]*repoURL:/ {print $2; exit}' argocd/application.ya
 [[ -n "${repo_url}" ]] || die "repoURL not found in argocd/application.yaml"
 [[ "${repo_url}" != *REPLACE_ME* ]] || die "argocd/application.yaml still contains a REPLACE_ME repoURL."
 
-echo "==> Applying RolloutManager bootstrap"
+echo "==> Applying RolloutManager / Argo CD bootstrap"
 oc apply -k bootstrap
 
 echo "==> Waiting for RolloutManager ${ROLLOUT_MANAGER} to become available"
@@ -68,6 +137,10 @@ while (( SECONDS < deadline )); do
     break
   fi
 
+  printf '    phase=%s controller=%s\n' \
+    "${phase:-unknown}" \
+    "${controller:-unknown}"
+
   sleep "${POLL_SECONDS}"
 done
 
@@ -79,7 +152,13 @@ fi
 echo "==> Creating/updating the Argo CD Application"
 oc apply -f argocd/application.yaml
 
-echo "==> Waiting for Argo CD Application ${APP_NAME} to become Synced"
+echo "==> Requesting Argo CD hard refresh"
+oc annotate applications.argoproj.io "${APP_NAME}" \
+  -n "${ARGOCD_NAMESPACE}" \
+  argocd.argoproj.io/refresh=hard \
+  --overwrite >/dev/null
+
+echo "==> Waiting for Argo CD Application ${APP_NAME} to sync ${desired_revision:0:12}"
 deadline=$((SECONDS + TIMEOUT_SECONDS))
 while (( SECONDS < deadline )); do
   sync_status="$(oc get applications.argoproj.io "${APP_NAME}" \
@@ -88,12 +167,15 @@ while (( SECONDS < deadline )); do
   health_status="$(oc get applications.argoproj.io "${APP_NAME}" \
     -n "${ARGOCD_NAMESPACE}" \
     -o jsonpath='{.status.health.status}' 2>/dev/null || true)"
+  synced_revision="$(app_revision)"
 
-  printf '    sync=%s health=%s\n' \
+  printf '    sync=%s health=%s revision=%s\n' \
     "${sync_status:-unknown}" \
-    "${health_status:-unknown}"
+    "${health_status:-unknown}" \
+    "${synced_revision:0:12}"
 
-  if [[ "${sync_status}" == "Synced" ]]; then
+  if [[ "${sync_status}" == "Synced" &&
+        "${synced_revision}" == "${desired_revision}" ]]; then
     break
   fi
 
@@ -101,41 +183,15 @@ while (( SECONDS < deadline )); do
 done
 
 if (( SECONDS >= deadline )); then
-  oc get applications.argoproj.io "${APP_NAME}" -n "${ARGOCD_NAMESPACE}" -o yaml || true
-  die "Timed out waiting for the Argo CD Application."
+  oc get applications.argoproj.io "${APP_NAME}" \
+    -n "${ARGOCD_NAMESPACE}" -o yaml || true
+  die "Timed out waiting for Argo CD to sync revision ${desired_revision}."
 fi
 
-echo "==> Verifying the pre-promotion AnalysisTemplate"
-deadline=$((SECONDS + TIMEOUT_SECONDS))
-while (( SECONDS < deadline )); do
-  if oc get analysistemplate "${ANALYSIS_TEMPLATE}" \
-    -n "${NAMESPACE}" >/dev/null 2>&1; then
-    echo "    AnalysisTemplate ${ANALYSIS_TEMPLATE} is present."
-    break
-  fi
-  sleep "${POLL_SECONDS}"
-done
+wait_for_analysis_template "${ANALYSIS_TEMPLATE}" "pre-promotion"
+wait_for_analysis_template "${POST_ANALYSIS_TEMPLATE}" "post-promotion"
 
-if (( SECONDS >= deadline )); then
-  die "Timed out waiting for AnalysisTemplate ${ANALYSIS_TEMPLATE}."
-fi
-
-echo "==> Verifying the post-promotion AnalysisTemplate"
-deadline=$((SECONDS + TIMEOUT_SECONDS))
-while (( SECONDS < deadline )); do
-  if oc get analysistemplate "${POST_ANALYSIS_TEMPLATE}" \
-    -n "${NAMESPACE}" >/dev/null 2>&1; then
-    echo "    AnalysisTemplate ${POST_ANALYSIS_TEMPLATE} is present."
-    break
-  fi
-  sleep "${POLL_SECONDS}"
-done
-
-if (( SECONDS >= deadline )); then
-  die "Timed out waiting for AnalysisTemplate ${POST_ANALYSIS_TEMPLATE}."
-fi
-
-echo "==> Waiting for the initial Rollout to exist"
+echo "==> Waiting for the Rollout to exist"
 deadline=$((SECONDS + TIMEOUT_SECONDS))
 while (( SECONDS < deadline )); do
   if oc get rollout "${APP_NAME}" -n "${NAMESPACE}" >/dev/null 2>&1; then
@@ -148,7 +204,7 @@ if (( SECONDS >= deadline )); then
   die "Timed out waiting for Rollout ${APP_NAME}."
 fi
 
-echo "==> Waiting for initial BLUE pods to appear"
+echo "==> Waiting for rollout pods to appear"
 deadline=$((SECONDS + TIMEOUT_SECONDS))
 while (( SECONDS < deadline )); do
   pod_count="$(oc get pod -n "${NAMESPACE}" -l app="${APP_NAME}" --no-headers 2>/dev/null | wc -l | tr -d ' ')"
@@ -159,10 +215,10 @@ while (( SECONDS < deadline )); do
 done
 
 if (( SECONDS >= deadline )); then
-  die "Timed out waiting for initial BLUE pods."
+  die "Timed out waiting for rollout pods."
 fi
 
-echo "==> Waiting for initial BLUE pods to become Ready"
+echo "==> Waiting for rollout pods to become Ready"
 oc wait \
   --for=condition=Ready \
   pod \
@@ -172,7 +228,10 @@ oc wait \
 
 echo
 echo "==> Current resources"
-oc get analysistemplate,rollout,rs,pod,svc,route -n "${NAMESPACE}"
+oc get analysistemplate,analysisrun,rollout,rs,pod,svc,route \
+  -n "${NAMESPACE}" 2>/dev/null || \
+oc get analysistemplate,rollout,rs,pod,svc,route \
+  -n "${NAMESPACE}"
 
 active_host="$(oc get route "${APP_NAME}" \
   -n "${NAMESPACE}" \
@@ -182,18 +241,15 @@ preview_host="$(oc get route "${APP_NAME}-preview" \
   -o jsonpath='{.spec.host}')"
 
 echo
-echo "BLUE demo deployed through Argo CD."
+echo "Blue/Green Argo Rollout deployed through Argo CD."
+echo "Git revision: ${desired_revision}"
+echo "Desired image: ${desired_image}"
 echo "Active URL : https://${active_host}"
 echo "Preview URL: https://${preview_host}"
 echo
-echo "Initial desired image:"
-awk '/^[[:space:]]*image:[[:space:]]+argoproj\/rollouts-demo:/ {print "  " $2; exit}' \
-  bluegreen-demo/rollout.yaml
-
-echo
-echo "Pre-promotion analysis template:"
-echo "  ${ANALYSIS_TEMPLATE}"
-echo "  (No AnalysisRun is expected for the initial creation; it runs on the next revision.)"
+echo "Analysis templates:"
+echo "  PRE : ${ANALYSIS_TEMPLATE}"
+echo "  POST: ${POST_ANALYSIS_TEMPLATE}"
 
 echo
 if oc argo rollouts version >/dev/null 2>&1; then
@@ -203,5 +259,13 @@ else
 fi
 
 echo
-echo "Next step:"
-echo "  bash scripts/switch-green.sh"
+case "${desired_image}" in
+  argoproj/rollouts-demo:blue)
+    echo "Next step:"
+    echo "  bash scripts/switch-green.sh --preview-only"
+    ;;
+  *)
+    echo "The repository currently requests ${desired_image}."
+    echo "A new pod-template revision is required to exercise PRE -> promote -> POST again."
+    ;;
+esac
