@@ -45,6 +45,8 @@ spec:
       maxUnavailable: 0
       maxSurge: 1
       steps:
+        # Every increase in canary weight is gated by a blocking Prometheus
+        # AnalysisRun. The only manual gate is after the initial 20% stage.
         - setWeight: 20
         - analysis:
             templates:
@@ -55,19 +57,20 @@ spec:
         - analysis:
             templates:
               - templateName: rollouts-canary-demo-prometheus
-        - pause:
-            duration: 20s
 
         - setWeight: 60
         - analysis:
             templates:
               - templateName: rollouts-canary-demo-prometheus
-        - pause:
-            duration: 20s
 
         - setWeight: 80
         - analysis:
             templates:
               - templateName: rollouts-canary-demo-prometheus
-        - pause:
-            duration: 20s
+
+        # Require one final successful HTTP-200 analysis at full canary
+        # exposure before the new ReplicaSet is declared stable.
+        - setWeight: 100
+        - analysis:
+            templates:
+              - templateName: rollouts-canary-demo-prometheus
