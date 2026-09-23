@@ -493,14 +493,94 @@ else
     die "Missing agent diagnostic RoleBinding; rerun with --remediate"
 fi
 
-oc rollout status deployment/"$AGENT_NAME" \
-  -n "$ARGOCD_NAMESPACE" \
-  --timeout="${TIMEOUT_SECONDS}s" >/dev/null || {
-    echo
-    oc get pod -n "$ARGOCD_NAMESPACE" -l app="$AGENT_NAME" -o wide || true
-    oc describe deployment "$AGENT_NAME" -n "$ARGOCD_NAMESPACE" || true
-    die "AI-agent Deployment did not become ready"
-  }
+echo "==> Waiting for AI-agent Deployment readiness"
+deadline=$((SECONDS + TIMEOUT_SECONDS))
+while (( SECONDS < deadline )); do
+  desired="$(
+    oc get deployment "$AGENT_NAME" \
+      -n "$ARGOCD_NAMESPACE" \
+      -o jsonpath='{.spec.replicas}' 2>/dev/null || true
+  )"
+  available="$(
+    oc get deployment "$AGENT_NAME" \
+      -n "$ARGOCD_NAMESPACE" \
+      -o jsonpath='{.status.availableReplicas}' 2>/dev/null || true
+  )"
+  pod="$(
+    oc get pod \
+      -n "$ARGOCD_NAMESPACE" \
+      -l app="$AGENT_NAME" \
+      --sort-by=.metadata.creationTimestamp \
+      -o jsonpath='{.items[-1:].metadata.name}' 2>/dev/null || true
+  )"
+
+  reason=""
+  message=""
+  if [[ -n "$pod" ]]; then
+    reason="$(
+      oc get pod "$pod" \
+        -n "$ARGOCD_NAMESPACE" \
+        -o jsonpath='{.status.containerStatuses[0].state.waiting.reason}' \
+        2>/dev/null || true
+    )"
+    message="$(
+      oc get pod "$pod" \
+        -n "$ARGOCD_NAMESPACE" \
+        -o jsonpath='{.status.containerStatuses[0].state.waiting.message}' \
+        2>/dev/null || true
+    )"
+  fi
+
+  printf '    desired=%s available=%s pod=%s reason=%s\n' \
+    "${desired:-0}" "${available:-0}" "${pod:-none}" "${reason:-starting}"
+
+  case "$reason" in
+    ErrImagePull|ImagePullBackOff|InvalidImageName|CreateContainerConfigError)
+      echo
+      echo "AI-agent container cannot start: ${reason}" >&2
+      [[ -n "$message" ]] && echo "Container message: ${message}" >&2
+      echo
+      oc get pod "$pod" -n "$ARGOCD_NAMESPACE" -o wide || true
+      echo
+      oc get events \
+        -n "$ARGOCD_NAMESPACE" \
+        --field-selector "involvedObject.name=${pod}" \
+        --sort-by='.lastTimestamp' || true
+      die "AI-agent image/configuration failure detected; pre-flight stopped immediately"
+      ;;
+
+    CrashLoopBackOff)
+      echo
+      echo "AI-agent is crash-looping." >&2
+      echo
+      oc logs "$pod" \
+        -n "$ARGOCD_NAMESPACE" \
+        --previous \
+        --tail=120 || true
+      echo
+      oc describe pod "$pod" -n "$ARGOCD_NAMESPACE" || true
+      die "AI-agent CrashLoopBackOff detected; pre-flight stopped immediately"
+      ;;
+  esac
+
+  if [[ "${desired:-0}" =~ ^[0-9]+$ &&
+        "${available:-0}" =~ ^[0-9]+$ &&
+        "${desired:-0}" -gt 0 &&
+        "${available:-0}" -ge "${desired:-0}" ]]; then
+    break
+  fi
+
+  sleep "$POLL_SECONDS"
+done
+
+if (( SECONDS >= deadline )); then
+  echo
+  oc get pod -n "$ARGOCD_NAMESPACE" -l app="$AGENT_NAME" -o wide || true
+  echo
+  oc describe deployment "$AGENT_NAME" -n "$ARGOCD_NAMESPACE" || true
+  die "Timed out waiting for AI-agent Deployment readiness"
+fi
+
 pass "AI-agent Deployment is ready"
 
 agent_endpoint="$(

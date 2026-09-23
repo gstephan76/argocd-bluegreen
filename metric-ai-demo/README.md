@@ -131,6 +131,42 @@ export ANALYSIS_MODEL='<model-name>'
 
 Never commit API keys to Git.
 
+## Pre-flight and recovery
+
+Before starting a scenario, validate the complete environment:
+
+```bash
+bash scripts/preflight-metric-ai-demo.sh
+```
+
+For the normal presentation/bootstrap path, use safe remediation:
+
+```bash
+bash scripts/preflight-metric-ai-demo.sh --remediate
+```
+
+`--remediate` reconciles safe, idempotent infrastructure drift such as the
+metric plugin, namespace, agent resources, Argo CD Application, and required
+RoleBindings. It does not commit or push Git changes and it does not promote,
+abort, or reset a Rollout.
+
+The AI agent image follows the upstream Kubernetes deployment:
+
+```text
+quay.io/kevindubois/kubernetes-agent:latest
+```
+
+If the agent cannot start, the pre-flight reports image/configuration failures
+immediately instead of waiting for the full deployment timeout. Useful manual
+checks are:
+
+```bash
+oc get pod   -n openshift-gitops   -l app=metric-ai-kubernetes-agent   -o wide
+
+oc get events   -n openshift-gitops   --sort-by='.lastTimestamp' |
+tail -40
+```
+
 # Live demo: terminals and scripts
 
 Use three terminals.

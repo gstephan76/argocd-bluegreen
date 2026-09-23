@@ -18,8 +18,10 @@ spec:
       serviceAccountName: metric-ai-kubernetes-agent
       containers:
         - name: agent
-          image: ghcr.io/kdubois/kubernetes-agent:latest
-          imagePullPolicy: Always
+          # Follow the upstream Kubernetes deployment, which publishes/uses
+          # this public Quay image for cluster deployments.
+          image: quay.io/kevindubois/kubernetes-agent:latest
+          imagePullPolicy: IfNotPresent
           ports:
             - name: http
               containerPort: 8080
