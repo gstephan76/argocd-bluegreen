@@ -15,7 +15,7 @@ spec:
       labels:
         app: metric-ai-demo
       annotations:
-        demo-rollout-revision: "baseline-v1"
+        demo-rollout-revision: "ai-reset-20260923T231620Z-3162692"
     spec:
       serviceAccountName: metric-ai-demo
       containers:
