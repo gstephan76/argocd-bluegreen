@@ -1,0 +1,76 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: metric-ai-demo
+  namespace: metric-ai-demo
+spec:
+  replicas: 4
+  revisionHistoryLimit: 2
+  minReadySeconds: 5
+  selector:
+    matchLabels:
+      app: metric-ai-demo
+  template:
+    metadata:
+      labels:
+        app: metric-ai-demo
+      annotations:
+        demo-rollout-revision: "ai-baseline"
+    spec:
+      serviceAccountName: metric-ai-demo
+      containers:
+        - name: metric-ai-demo
+          image: ghcr.io/kdubois/argo-rollouts-quarkus-demo:v1.stable
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: ROLLOUT_NAME
+              value: metric-ai-demo
+            - name: ROLLOUT_NAMESPACE
+              value: metric-ai-demo
+            - name: KUBERNETES_AGENT_URL
+              value: http://metric-ai-kubernetes-agent.openshift-gitops.svc.cluster.local:8080
+          readinessProbe:
+            httpGet:
+              path: /q/health/ready
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /q/health/live
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 192Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+  strategy:
+    canary:
+      maxUnavailable: 0
+      maxSurge: 1
+      stableMetadata:
+        labels:
+          role: stable
+      canaryMetadata:
+        labels:
+          role: canary
+      steps:
+        - setWeight: 25
+        - pause:
+            duration: 20s
+        - analysis:
+            templates:
+              - templateName: metric-ai-analysis
+        - setWeight: 100
+        - pause: {}

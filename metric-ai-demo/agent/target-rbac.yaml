@@ -1,0 +1,67 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: metric-ai-kubernetes-agent-reader
+  namespace: metric-ai-demo
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - pods
+      - events
+      - services
+      - configmaps
+      - endpoints
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - ""
+    resources:
+      - pods/log
+    verbs:
+      - get
+  - apiGroups:
+      - apps
+    resources:
+      - deployments
+      - replicasets
+      - statefulsets
+      - daemonsets
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - argoproj.io
+    resources:
+      - rollouts
+      - analysisruns
+      - analysistemplates
+      - clusteranalysistemplates
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - metrics.k8s.io
+    resources:
+      - pods
+    verbs:
+      - get
+      - list
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: metric-ai-kubernetes-agent-reader
+  namespace: metric-ai-demo
+subjects:
+  - kind: ServiceAccount
+    name: metric-ai-kubernetes-agent
+    namespace: openshift-gitops
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: metric-ai-kubernetes-agent-reader

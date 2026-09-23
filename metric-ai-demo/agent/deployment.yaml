@@ -1,0 +1,90 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: metric-ai-kubernetes-agent
+  namespace: openshift-gitops
+  labels:
+    app: metric-ai-kubernetes-agent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: metric-ai-kubernetes-agent
+  template:
+    metadata:
+      labels:
+        app: metric-ai-kubernetes-agent
+    spec:
+      serviceAccountName: metric-ai-kubernetes-agent
+      containers:
+        - name: agent
+          image: ghcr.io/kdubois/kubernetes-agent:latest
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: QUARKUS_KUBERNETES_CONFIG_SECRETS
+              value: metric-ai-kubernetes-agent
+            - name: ANALYSIS_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: metric-ai-kubernetes-agent
+                  key: analysis_api_key
+            - name: ANALYSIS_BASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: metric-ai-kubernetes-agent
+                  key: analysis_base_url
+            - name: ANALYSIS_MODEL
+              valueFrom:
+                secretKeyRef:
+                  name: metric-ai-kubernetes-agent
+                  key: analysis_model
+            - name: REMEDIATION_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: metric-ai-kubernetes-agent
+                  key: remediation_api_key
+                  optional: true
+            - name: REMEDIATION_BASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: metric-ai-kubernetes-agent
+                  key: remediation_base_url
+                  optional: true
+            - name: REMEDIATION_MODEL
+              valueFrom:
+                secretKeyRef:
+                  name: metric-ai-kubernetes-agent
+                  key: remediation_model
+                  optional: true
+            - name: GITHUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: metric-ai-kubernetes-agent
+                  key: github_token
+                  optional: true
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 2Gi
+          readinessProbe:
+            httpGet:
+              path: /q/health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /q/health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3

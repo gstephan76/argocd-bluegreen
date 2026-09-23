@@ -1,0 +1,58 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: metric-ai-demo
+  namespace: metric-ai-demo
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: metric-ai-demo
+  namespace: metric-ai-demo
+rules:
+  - apiGroups:
+      - argoproj.io
+    resources:
+      - rollouts
+      - analysisruns
+    verbs:
+      - get
+      - list
+      - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: metric-ai-demo
+  namespace: metric-ai-demo
+subjects:
+  - kind: ServiceAccount
+    name: metric-ai-demo
+    namespace: metric-ai-demo
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: metric-ai-demo
+---
+# The metric-ai provider runs inside the Argo Rollouts controller process and
+# needs to read stable/canary pod logs. The deploy helper creates a RoleBinding
+# to this Role for the controller's discovered ServiceAccount.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: metric-ai-rollouts-plugin-reader
+  namespace: metric-ai-demo
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - pods
+    verbs:
+      - get
+      - list
+  - apiGroups:
+      - ""
+    resources:
+      - pods/log
+    verbs:
+      - get

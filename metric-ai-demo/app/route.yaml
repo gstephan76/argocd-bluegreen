@@ -1,0 +1,14 @@
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: metric-ai-demo
+  namespace: metric-ai-demo
+spec:
+  to:
+    kind: Service
+    name: metric-ai-demo
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
