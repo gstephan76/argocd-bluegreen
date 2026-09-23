@@ -46,7 +46,7 @@ rg -q 'demo-rollout-revision:' "$ROLLOUT_FILE" || \
 trigger="ai-nullpointer-$(date -u +%Y%m%dT%H%M%SZ)-$$"
 echo "==> Triggering fresh revision: $trigger"
 sed -i -E \
-  "s#demo-rollout-revision: \\".*\\"#demo-rollout-revision: \\"$trigger\\"#" \
+  "s#demo-rollout-revision: \".*\"#demo-rollout-revision: \"$trigger\"#" \
   "$ROLLOUT_FILE"
 
 git add "$ROLLOUT_FILE"
