@@ -17,6 +17,10 @@ EXPECTED_REPO_SSH="git@github.com:gstephan76/argocd-bluegreen.git"
 ANALYSIS_BASE_URL="${ANALYSIS_BASE_URL:-https://api.openai.com/v1}"
 ANALYSIS_MODEL="${ANALYSIS_MODEL:-gpt-4o}"
 
+BASELINE_IMAGE="ghcr.io/kdubois/argo-rollouts-quarkus-demo:v1.stable"
+BASELINE_MARKER="baseline-v1"
+BASELINE_PROMOTION_REQUESTED=0
+
 REMEDIATE=0
 
 usage() {
@@ -36,11 +40,13 @@ With --remediate:
     - AI-agent Deployment/Service/RBAC
     - Argo CD Application and hard refresh
     - Argo Rollouts controller pod-log RoleBinding
+    - final-pause promotion only for the canonical baseline-v1/v1.stable rollout
 
 The script never:
   - commits or pushes Git changes
   - changes the demo image or rollout revision annotation
-  - promotes, aborts, or resets a Rollout
+  - promotes an arbitrary scenario candidate
+  - aborts or resets a Rollout
   - overwrites another metric provider plugin
 EOF
 }
@@ -137,7 +143,7 @@ rollout_exists() {
 }
 
 rollout_healthy() {
-  local phase stable current
+  local phase stable current step live_image live_marker
   phase="$(
     oc get rollout "$APP_NAME" \
       -n "$NAMESPACE" \
@@ -153,8 +159,24 @@ rollout_healthy() {
       -n "$NAMESPACE" \
       -o jsonpath='{.status.currentPodHash}' 2>/dev/null || true
   )"
+  step="$(
+    oc get rollout "$APP_NAME" \
+      -n "$NAMESPACE" \
+      -o jsonpath='{.status.currentStepIndex}' 2>/dev/null || true
+  )"
+  live_image="$(
+    oc get rollout "$APP_NAME" \
+      -n "$NAMESPACE" \
+      -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || true
+  )"
+  live_marker="$(
+    oc get rollout "$APP_NAME" \
+      -n "$NAMESPACE" \
+      -o jsonpath='{.spec.template.metadata.annotations.demo-rollout-revision}' \
+      2>/dev/null || true
+  )"
 
-  info "Rollout phase=${phase:-unknown} stable=${stable:-none} current=${current:-none}"
+  info "Rollout phase=${phase:-unknown} step=${step:-unknown} stable=${stable:-none} current=${current:-none} image=${live_image:-unknown} marker=${live_marker:-unknown}"
 
   if [[ "$phase" == "Degraded" ]]; then
     echo
@@ -167,13 +189,37 @@ rollout_healthy() {
   fi
 
   if [[ "$phase" == "Paused" ]]; then
+    if (( REMEDIATE )) &&
+       [[ "$step" == "4" &&
+          "${desired_image:-}" == "$BASELINE_IMAGE" &&
+          "${desired_marker:-}" == "$BASELINE_MARKER" &&
+          "$live_image" == "$BASELINE_IMAGE" &&
+          "$live_marker" == "$BASELINE_MARKER" &&
+          -n "$current" &&
+          "$stable" != "$current" ]]; then
+      if (( BASELINE_PROMOTION_REQUESTED == 0 )); then
+        fix "Promoting canonical known-good baseline at final pause"
+        oc argo rollouts promote "$APP_NAME" -n "$NAMESPACE" >/dev/null
+        BASELINE_PROMOTION_REQUESTED=1
+      fi
+      return 1
+    fi
+
     echo
-    echo "The demo is paused in an existing rollout." >&2
-    echo "Finish that workflow before starting another scenario." >&2
-    echo "For an AI-approved candidate:" >&2
-    echo "  bash scripts/promote-metric-ai-stable.sh" >&2
-    echo "For an unwanted/failed scenario:" >&2
-    echo "  bash scripts/reset-metric-ai-demo.sh" >&2
+    if [[ "$step" == "4" &&
+          "${desired_image:-}" == "$BASELINE_IMAGE" &&
+          "${desired_marker:-}" == "$BASELINE_MARKER" &&
+          "$live_image" == "$BASELINE_IMAGE" &&
+          "$live_marker" == "$BASELINE_MARKER" ]]; then
+      echo "The canonical baseline is paused at final approval." >&2
+      echo "Rerun with --remediate to finalize only this known-good baseline." >&2
+    else
+      echo "The demo is paused in an existing non-baseline rollout." >&2
+      echo "For an AI-approved candidate:" >&2
+      echo "  bash scripts/promote-metric-ai-stable.sh" >&2
+      echo "For an unwanted/failed scenario:" >&2
+      echo "  bash scripts/reset-metric-ai-demo.sh" >&2
+    fi
     return 2
   fi
 
@@ -622,10 +668,20 @@ desired_image="$(
     }
   ' metric-ai-demo/app/rollout.yaml
 )"
+desired_marker="$(
+  awk '
+    $1 == "demo-rollout-revision:" {
+      gsub(/"/, "", $2)
+      print $2
+      exit
+    }
+  ' metric-ai-demo/app/rollout.yaml
+)"
 
 if ! rollout_exists &&
-   [[ "$desired_image" != "ghcr.io/kdubois/argo-rollouts-quarkus-demo:v1.stable" ]]; then
-  die "Refusing first bootstrap because Git desired image is not v1.stable: ${desired_image:-unknown}"
+   { [[ "$desired_image" != "$BASELINE_IMAGE" ]] ||
+     [[ "$desired_marker" != "$BASELINE_MARKER" ]]; }; then
+  die "Refusing first bootstrap because Git desired baseline is not canonical: image=${desired_image:-unknown} marker=${desired_marker:-unknown}"
 fi
 
 app_exists=1
