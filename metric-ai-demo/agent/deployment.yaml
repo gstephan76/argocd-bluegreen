@@ -26,8 +26,6 @@ spec:
             - name: http
               containerPort: 8080
           env:
-            - name: QUARKUS_KUBERNETES_CONFIG_SECRETS
-              value: metric-ai-kubernetes-agent
             - name: ANALYSIS_API_KEY
               valueFrom:
                 secretKeyRef:
@@ -64,9 +62,8 @@ spec:
             - name: GITHUB_TOKEN
               valueFrom:
                 secretKeyRef:
-                  name: metric-ai-kubernetes-agent
+                  name: metric-ai-github-bootstrap
                   key: github_token
-                  optional: true
           resources:
             requests:
               cpu: 250m

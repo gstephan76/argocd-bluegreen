@@ -3,5 +3,6 @@ kind: Kustomization
 resources:
   - serviceaccount.yaml
   - target-rbac.yaml
+  - github-bootstrap-secret.yaml
   - deployment.yaml
   - service.yaml

@@ -214,6 +214,7 @@ required_files=(
   metric-ai-demo/app/rollout.yaml
   metric-ai-demo/app/rbac.yaml
   metric-ai-demo/agent/kustomization.yaml
+  metric-ai-demo/agent/github-bootstrap-secret.yaml
   scripts/install-metric-ai-plugin.sh
 )
 
@@ -461,8 +462,6 @@ EOF
     secret_args+=("--from-literal=remediation_base_url=${REMEDIATION_BASE_URL}")
   [[ -n "${REMEDIATION_MODEL:-}" ]] && \
     secret_args+=("--from-literal=remediation_model=${REMEDIATION_MODEL}")
-  [[ -n "${GITHUB_TOKEN:-}" ]] && \
-    secret_args+=("--from-literal=github_token=${GITHUB_TOKEN}")
 
   oc "${secret_args[@]}" \
     --dry-run=client \

@@ -67,8 +67,6 @@ if [[ -n "${ANALYSIS_API_KEY:-}" ]]; then
     args+=("--from-literal=remediation_base_url=${REMEDIATION_BASE_URL}")
   [[ -n "${REMEDIATION_MODEL:-}" ]] && \
     args+=("--from-literal=remediation_model=${REMEDIATION_MODEL}")
-  [[ -n "${GITHUB_TOKEN:-}" ]] && \
-    args+=("--from-literal=github_token=${GITHUB_TOKEN}")
 
   oc "${args[@]}" \
     --dry-run=client \
