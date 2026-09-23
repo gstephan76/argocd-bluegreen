@@ -760,15 +760,82 @@ if ! wait_for "Rollout ${NAMESPACE}/${APP_NAME} to become healthy" rollout_healt
 fi
 pass "Rollout is Healthy with stableRS == currentPodHash"
 
-if (( REMEDIATE )); then
+rolebinding_ok=0
+if oc get rolebinding metric-ai-rollouts-plugin-reader \
+  -n "$NAMESPACE" >/dev/null 2>&1; then
+  role_kind="$(
+    oc get rolebinding metric-ai-rollouts-plugin-reader \
+      -n "$NAMESPACE" \
+      -o jsonpath='{.roleRef.kind}' 2>/dev/null || true
+  )"
+  role_name="$(
+    oc get rolebinding metric-ai-rollouts-plugin-reader \
+      -n "$NAMESPACE" \
+      -o jsonpath='{.roleRef.name}' 2>/dev/null || true
+  )"
+  role_group="$(
+    oc get rolebinding metric-ai-rollouts-plugin-reader \
+      -n "$NAMESPACE" \
+      -o jsonpath='{.roleRef.apiGroup}' 2>/dev/null || true
+  )"
+  role_subjects="$(
+    oc get rolebinding metric-ai-rollouts-plugin-reader \
+      -n "$NAMESPACE" \
+      -o jsonpath='{range .subjects[*]}{.kind}{"|"}{.namespace}{"|"}{.name}{"\n"}{end}' \
+      2>/dev/null |
+    sort || true
+  )"
+  expected_subject="ServiceAccount|${ARGOCD_NAMESPACE}|${ROLLOUTS_SA}"
+
+  if [[ "$role_kind" == "Role" &&
+        "$role_name" == "metric-ai-rollouts-plugin-reader" &&
+        "$role_group" == "rbac.authorization.k8s.io" &&
+        "$role_subjects" == "$expected_subject" ]]; then
+    rolebinding_ok=1
+  fi
+fi
+
+if (( rolebinding_ok )); then
+  pass "Rollouts-controller pod-log RoleBinding is already correct"
+elif (( REMEDIATE )); then
   fix "Reconciling Rollouts-controller pod-log RoleBinding"
-  oc create rolebinding metric-ai-rollouts-plugin-reader \
-    -n "$NAMESPACE" \
-    --role=metric-ai-rollouts-plugin-reader \
-    "--serviceaccount=${ARGOCD_NAMESPACE}:${ROLLOUTS_SA}" \
-    --dry-run=client \
-    -o yaml |
-  oc apply -f - >/dev/null
+  reconciled=0
+
+  for attempt in 1 2 3; do
+    if cat <<EOF | oc auth reconcile \
+      --remove-extra-subjects \
+      -f - >/dev/null
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: metric-ai-rollouts-plugin-reader
+  namespace: ${NAMESPACE}
+subjects:
+  - kind: ServiceAccount
+    name: ${ROLLOUTS_SA}
+    namespace: ${ARGOCD_NAMESPACE}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: metric-ai-rollouts-plugin-reader
+EOF
+    then
+      reconciled=1
+      break
+    fi
+
+    if (( attempt < 3 )); then
+      info "RoleBinding reconciliation attempt ${attempt}/3 failed; retrying"
+      sleep $((attempt * 2))
+    fi
+  done
+
+  (( reconciled )) || \
+    die "Failed to reconcile Rollouts-controller pod-log RoleBinding after 3 attempts"
+
+  pass "Rollouts-controller pod-log RoleBinding reconciled"
+else
+  die "Rollouts-controller pod-log RoleBinding is missing or drifted; rerun with --remediate"
 fi
 
 controller_identity="system:serviceaccount:${ARGOCD_NAMESPACE}:${ROLLOUTS_SA}"
