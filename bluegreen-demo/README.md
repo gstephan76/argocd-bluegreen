@@ -1,395 +1,226 @@
 # Argo CD + Argo Rollouts Blue/Green Demo on OpenShift
 
-This repository demonstrates a real **Argo CD + Argo Rollouts blue/green deployment** on Red Hat OpenShift, including a basic **pre-promotion AnalysisRun**.
+This demo uses **Argo CD** for GitOps desired state and **Argo Rollouts** for the runtime Blue/Green lifecycle.
 
-Argo CD owns desired state from Git. Argo Rollouts owns the runtime deployment lifecycle: ReplicaSets, preview/stable selection, `rollouts-pod-template-hash`, analysis, promotion, abort behavior, and delayed scale-down of the previous stable revision.
+The candidate is validated twice:
 
-This is not a plain OpenShift Route or Service-selector blue/green implementation.
+```text
+GREEN preview
+    |
+    | prePromotionAnalysis
+    | 3 HTTP smoke checks
+    v
+manual promotion gate
+    |
+    v
+ACTIVE Service -> GREEN
+    |
+    | postPromotionAnalysis
+    | 5 HTTP smoke checks
+    v
+GREEN becomes STABLE
+```
+
+If the pre-promotion analysis fails, production remains on the previous active ReplicaSet. If the post-promotion analysis fails or errors, Argo Rollouts aborts and restores the active Service to the previous stable ReplicaSet.
 
 ## Architecture
 
-```text
-GitHub
-  |
-  v
-Argo CD Application
-  |
-  v
-Rollout + AnalysisTemplate + Services + Routes
-  |
-  v
-Argo Rollouts controller
-  |
-  +-------------------------------+
-  |                               |
-  v                               v
-ACTIVE Service                PREVIEW Service
-  |                               |
-  v                               v
-BLUE ReplicaSet               GREEN ReplicaSet
-production                    candidate
-                                  |
-                                  v
-                         pre-promotion AnalysisRun
-                                  |
-                                  v
-                            HTTP smoke-test Job
-                                  |
-                     +------------+------------+
-                     |                         |
-                  failure                    success
-                     |                         |
-                     v                         v
-                    abort             manual promotion gate
-                                               |
-                                               v
-                                      ACTIVE -> GREEN
-```
-
-The OpenShift Routes remain fixed:
+The OpenShift Routes stay fixed. Argo Rollouts changes the hash selector of the Services:
 
 ```text
-bluegreen-demo Route
-        |
-        v
-bluegreen-demo-active Service
-        |
-        v
-Rollouts-selected active ReplicaSet
-
-bluegreen-demo-preview Route
-        |
-        v
-bluegreen-demo-preview Service
-        |
-        v
-Rollouts-selected preview ReplicaSet
+Production Route                    Preview Route
+      |                                  |
+      v                                  v
+bluegreen-demo-active            bluegreen-demo-preview
+      |                                  |
+      v                                  v
+ACTIVE ReplicaSet                 PREVIEW ReplicaSet
 ```
 
-## Repository layout
+`argocd/application.yaml` ignores only the Rollouts-owned `rollouts-pod-template-hash` key on the active and preview Services and enables `RespectIgnoreDifferences=true`. Argo CD therefore continues to own the rest of each Service without fighting the Rollouts controller.
+
+## Analysis behavior
+
+### Pre-promotion analysis
+
+`bluegreen-demo/analysis-template.yaml` creates a Job that performs three `curl --fail` requests against:
 
 ```text
-argocd/
-└── application.yaml
-
-bootstrap/
-├── namespace.yaml
-├── rollout-manager.yaml
-└── kustomization.yaml
-
-bluegreen-demo/
-├── analysis-template.yaml
-├── rollout.yaml
-├── service-active.yaml
-├── service-preview.yaml
-├── route-active.yaml
-├── route-preview.yaml
-├── kustomization.yaml
-└── README.md
-
-scripts/
-├── deploy-demo.sh
-└── switch-green.sh
+http://bluegreen-demo-preview.bluegreen-demo.svc.cluster.local
 ```
 
-## Prerequisites
+The active Service is not switched until this AnalysisRun succeeds.
 
-The cluster must already have Red Hat OpenShift GitOps installed with the Argo CD and Argo Rollouts CRDs.
+### Post-promotion analysis
 
-Required workstation commands:
+`bluegreen-demo/post-analysis-template.yaml` creates a second Job that performs five `curl --fail` requests against:
 
 ```text
-oc
-git
+http://bluegreen-demo-active.bluegreen-demo.svc.cluster.local
 ```
 
-The promotion script requires the Argo Rollouts `oc` plugin:
+Only after this AnalysisRun succeeds is the candidate marked stable.
+
+`scaleDownDelaySeconds` is intentionally omitted. With post-promotion analysis configured, the previous stable ReplicaSet is retained until that analysis completes, so it remains available as the rollback target during post-promotion validation.
+
+## Recommended scripted demo
+
+Run from the repository root:
 
 ```bash
-oc argo rollouts version
+cd ~/Documents/POCs/ArgoCD
 ```
 
-You must already be logged into the OpenShift cluster:
-
-```bash
-oc whoami
-```
-
-## Quick start
-
-Clone or update the repository:
-
-```bash
-git clone https://github.com/gstephan76/argocd-bluegreen.git
-cd argocd-bluegreen
-```
-
-or:
-
-```bash
-git pull --ff-only
-```
-
-Deploy the initial BLUE environment:
+### 1. Reconcile the demo
 
 ```bash
 bash scripts/deploy-demo.sh
 ```
 
-Switch from BLUE to GREEN:
+The script validates Git state, applies the Rollouts bootstrap, reconciles the Argo CD Application to the exact Git commit, waits for both AnalysisTemplates, and prints the active and preview URLs.
+
+### 2. Ensure a clean BLUE baseline
+
+The repository may already request GREEN after an earlier demo. This command is safe to run either way:
 
 ```bash
-bash scripts/switch-green.sh
+bash scripts/prepare-blue.sh
 ```
 
-To create and validate GREEN, run the analysis, but stop before the production switch:
+If BLUE is already active, it exits without changing anything. Otherwise it commits the Git change to BLUE, waits for the BLUE pre-promotion analysis, promotes it, waits for the post-promotion analysis, and returns only when BLUE is stable.
+
+### 3. Create and validate GREEN without production cutover
 
 ```bash
 bash scripts/switch-green.sh --preview-only
 ```
 
----
+The flow is:
 
-# 1. Initial BLUE deployment
-
-The repository initially defines:
-
-```yaml
-image: argoproj/rollouts-demo:blue
+```text
+Git BLUE -> GREEN
+        |
+        v
+Argo CD exact-revision sync
+        |
+        v
+GREEN preview ReplicaSet Ready
+        |
+        v
+pre-promotion AnalysisRun
+        |
+        v
+3 HTTP smoke checks succeed
+        |
+        v
+PAUSED before production cutover
 ```
 
-Run:
+At this point:
+
+```text
+Production Route -> BLUE
+Preview Route    -> GREEN
+```
+
+Open both URLs printed by the script and compare them.
+
+### 4. Manually promote the validated preview
 
 ```bash
-bash scripts/deploy-demo.sh
+bash scripts/promote-bluegreen.sh
 ```
 
-The deployment script:
+The helper verifies the successful pre-analysis and paused state, promotes exactly one step, waits for the active Service switch, waits for the post-promotion AnalysisRun, and verifies that the candidate becomes both active and stable.
+
+Expected flow:
 
 ```text
-1. Verifies oc and git.
-2. Verifies the OpenShift login.
-3. Verifies Application, Rollout, RolloutManager, AnalysisTemplate and AnalysisRun CRDs.
-4. Applies bootstrap/.
-5. Waits for RolloutManager to become available.
-6. Applies argocd/application.yaml.
-7. Waits for Argo CD to report Synced.
-8. Verifies bluegreen-demo-smoke-test exists.
-9. Waits for the initial Rollout and BLUE pods.
-10. Prints the active and preview Routes.
+manual promote
+     |
+     v
+ACTIVE Service -> GREEN
+     |
+     v
+post-promotion AnalysisRun
+     |
+     +-- failure/error --> automatic abort and ACTIVE -> previous BLUE
+     |
+     +-- success -------> GREEN becomes STABLE
 ```
 
-The bootstrap resources are applied directly because the Argo Rollouts controller must exist before Argo CD can deploy the `Rollout`.
-
-Argo CD manages everything under:
-
-```text
-bluegreen-demo/
-```
-
-Initial state:
-
-```text
-ACTIVE Service  ---> BLUE ReplicaSet
-PREVIEW Service ---> BLUE ReplicaSet
-```
-
-No pre-promotion AnalysisRun is expected for the initial creation because there is no upgrade to analyze. The analysis is triggered when the pod template changes to a new revision.
-
-Inspect:
-
-```bash
-oc get application bluegreen-demo \
-  -n openshift-gitops
-
-oc get analysistemplate,rollout,rs,pod,svc,route \
-  -n bluegreen-demo
-
-oc argo rollouts get rollout bluegreen-demo \
-  -n bluegreen-demo
-```
-
----
-
-# 2. Pre-promotion Analysis
-
-The demo includes:
-
-```text
-bluegreen-demo/analysis-template.yaml
-```
-
-It defines an Argo Rollouts `AnalysisTemplate` named:
-
-```text
-bluegreen-demo-smoke-test
-```
-
-The Rollout references it with:
-
-```yaml
-strategy:
-  blueGreen:
-    activeService: bluegreen-demo-active
-    previewService: bluegreen-demo-preview
-
-    prePromotionAnalysis:
-      templates:
-        - templateName: bluegreen-demo-smoke-test
-      args:
-        - name: preview-url
-          value: http://bluegreen-demo-preview.bluegreen-demo.svc.cluster.local
-
-    autoPromotionEnabled: false
-```
-
-When GREEN becomes fully available, Argo Rollouts creates an `AnalysisRun` before allowing promotion.
-
-The AnalysisTemplate uses the native **Job metric provider**. The generated Job runs:
-
-```text
-quay.io/curl/curl:8.22.0
-```
-
-and performs three HTTP requests to the preview Service.
-
-Conceptually:
-
-```text
-GREEN pods Ready
-      |
-      v
-AnalysisRun
-      |
-      v
-Job
-      |
-      +--> GET preview Service
-      +--> GET preview Service
-      +--> GET preview Service
-      |
-      +------ exit 0 ------> Successful
-      |
-      +------ non-zero ----> Failed
-```
-
-For a Job metric, a Job completing with exit code zero is a successful metric. A non-zero exit is a failed metric.
-
-If this pre-promotion analysis fails, Argo Rollouts aborts the update before changing the active Service. BLUE therefore remains production.
-
-The analysis is deliberately basic: it validates that the candidate is reachable through the exact preview Service that Argo Rollouts selected. A production implementation could replace or extend this with Prometheus, Service Mesh telemetry, application-level checks, or business metrics.
-
----
-
-# 3. Switch BLUE to GREEN
-
-Run:
+For a one-command GREEN switch after BLUE is stable, this remains available:
 
 ```bash
 bash scripts/switch-green.sh
 ```
 
-The script follows the GitOps path:
+That performs the preview/pre-analysis phase and then delegates promotion and post-analysis validation to `promote-bluegreen.sh`.
 
-```text
-Git :blue
-   |
-   v
-change rollout.yaml to :green
-   |
-   v
-git commit + push
-   |
-   v
-Argo CD sync
-   |
-   v
-GREEN ReplicaSet created
-   |
-   v
-PREVIEW Service -> GREEN
-ACTIVE Service  -> BLUE
-   |
-   v
-wait for GREEN Ready
-   |
-   v
-pre-promotion AnalysisRun
-   |
-   v
-HTTP smoke-test Job
-   |
-   +---- failure ---> rollout aborts; ACTIVE remains BLUE
-   |
-   +---- success
-            |
-            v
-    autoPromotionEnabled=false
-            |
-            v
-       manual pause
-            |
-            v
- oc argo rollouts promote
-            |
-            v
- ACTIVE Service -> GREEN
+## Manual demo without helper scripts
+
+The sequence below performs the same demo using `oc`, Git, and shell commands directly.
+
+### 1. Verify access and required APIs
+
+```bash
+oc whoami
+oc argo rollouts version
+
+oc get crd applications.argoproj.io
+oc get crd argocds.argoproj.io
+oc get crd rollouts.argoproj.io
+oc get crd rolloutmanagers.argoproj.io
+oc get crd analysistemplates.argoproj.io
+oc get crd analysisruns.argoproj.io
 ```
 
-The script:
+### 2. Apply bootstrap and the Argo CD Application
 
-1. Refuses to proceed if tracked Git changes exist.
-2. Verifies the local branch matches `origin/<branch>`.
-3. Changes `argoproj/rollouts-demo:blue` to `argoproj/rollouts-demo:green`.
-4. Commits and pushes the image change.
-5. Waits for Argo CD to sync that exact commit.
-6. Waits for a distinct GREEN preview ReplicaSet.
-7. Waits for GREEN preview pods to become Ready.
-8. Waits for the pre-promotion `AnalysisRun`.
-9. Requires the AnalysisRun status to become `Successful`.
-10. Stops without promotion if `--preview-only` was requested.
-11. Otherwise calls `oc argo rollouts promote`.
-12. Waits for the active Service to point to the GREEN hash.
+```bash
+oc apply -k bootstrap
 
-If the analysis ends as `Failed`, `Error`, or `Inconclusive`, the script prints diagnostics and exits without issuing a promotion command.
+oc apply \
+  -f argocd/application.yaml
 
-Because Git still contains GREEN after an analysis failure, revert the GREEN commit before retrying so Git desired state matches the intended BLUE production state.
-
----
-
-# State before promotion
-
-After GREEN is Ready and the analysis succeeds:
-
-```text
-Production Route
-      |
-      v
-bluegreen-demo-active
-      |
-      v
-BLUE hash
-      |
-      v
-BLUE ReplicaSet
-
-
-Preview Route
-      |
-      v
-bluegreen-demo-preview
-      |
-      v
-GREEN hash
-      |
-      v
-GREEN ReplicaSet
-      |
-      v
-AnalysisRun = Successful
+oc annotate applications.argoproj.io bluegreen-demo \
+  -n openshift-gitops \
+  argocd.argoproj.io/refresh=hard \
+  --overwrite
 ```
 
-The active and preview hashes should differ:
+Inspect Argo CD synchronization:
+
+```bash
+oc get applications.argoproj.io bluegreen-demo \
+  -n openshift-gitops \
+  -o jsonpath='sync={.status.sync.status} health={.status.health.status} revision={.status.sync.revision}{"\n"}'
+```
+
+### 3. Verify both AnalysisTemplates
+
+```bash
+oc get analysistemplate \
+  bluegreen-demo-smoke-test \
+  bluegreen-demo-post-smoke-test \
+  -n bluegreen-demo
+```
+
+### 4. Verify active and preview Services/Routes
+
+```bash
+oc get svc \
+  bluegreen-demo-active \
+  bluegreen-demo-preview \
+  -n bluegreen-demo
+
+oc get route \
+  bluegreen-demo \
+  bluegreen-demo-preview \
+  -n bluegreen-demo
+```
+
+Display the current Rollouts hash selectors:
 
 ```bash
 oc get svc \
@@ -399,206 +230,269 @@ oc get svc \
   -o jsonpath='{range .items[*]}{.metadata.name}{" -> "}{.spec.selector.rollouts-pod-template-hash}{"\n"}{end}'
 ```
 
-Inspect analysis resources:
+### 5. Establish BLUE as the baseline if necessary
+
+Inspect the image in Git:
 
 ```bash
-oc get analysistemplate,analysisrun,job \
+rg 'image:.*argoproj/rollouts-demo:' \
+  bluegreen-demo/rollout.yaml
+```
+
+If Git currently requests GREEN, change it to BLUE:
+
+```bash
+sed -i \
+  's#argoproj/rollouts-demo:green#argoproj/rollouts-demo:blue#' \
+  bluegreen-demo/rollout.yaml
+
+git add bluegreen-demo/rollout.yaml
+git diff --cached --check
+git commit -m "Restore blue baseline"
+git push origin main
+```
+
+Force an Argo CD refresh:
+
+```bash
+oc annotate applications.argoproj.io bluegreen-demo \
+  -n openshift-gitops \
+  argocd.argoproj.io/refresh=hard \
+  --overwrite
+```
+
+Watch the Rollout:
+
+```bash
+oc argo rollouts get rollout bluegreen-demo \
+  -n bluegreen-demo \
+  --watch
+```
+
+When the BLUE pre-promotion AnalysisRun is successful and the rollout is paused, promote BLUE:
+
+```bash
+oc argo rollouts promote bluegreen-demo \
   -n bluegreen-demo
 ```
 
-Get the current pre-promotion AnalysisRun name:
+Wait for the post-promotion analysis to succeed and for BLUE to become `Healthy`/stable before continuing.
+
+### 6. Commit GREEN desired state
 
 ```bash
-ANALYSIS_RUN="$(oc get rollout bluegreen-demo \
+sed -i \
+  's#argoproj/rollouts-demo:blue#argoproj/rollouts-demo:green#' \
+  bluegreen-demo/rollout.yaml
+
+git add bluegreen-demo/rollout.yaml
+git diff --cached --check
+git commit -m "Deploy green preview"
+git push origin main
+```
+
+Record the exact Git revision:
+
+```bash
+REV="$(git rev-parse HEAD)"
+echo "$REV"
+```
+
+Force Argo CD to refresh:
+
+```bash
+oc annotate applications.argoproj.io bluegreen-demo \
+  -n openshift-gitops \
+  argocd.argoproj.io/refresh=hard \
+  --overwrite
+```
+
+Check until Argo CD reports the same revision:
+
+```bash
+oc get applications.argoproj.io bluegreen-demo \
+  -n openshift-gitops \
+  -o jsonpath='sync={.status.sync.status} revision={.status.sync.revision}{"\n"}'
+```
+
+The reported revision must equal `$REV`.
+
+### 7. Watch GREEN preview and pre-promotion analysis
+
+```bash
+oc argo rollouts get rollout bluegreen-demo \
+  -n bluegreen-demo \
+  --watch
+```
+
+In another terminal:
+
+```bash
+watch -n 2 '
+oc get analysisrun,job \
+  -n bluegreen-demo
+'
+```
+
+Get the current pre-promotion AnalysisRun:
+
+```bash
+PRE_ANALYSIS="$(oc get rollout bluegreen-demo \
   -n bluegreen-demo \
   -o jsonpath='{.status.blueGreen.prePromotionAnalysisRunStatus.name}')"
 
-echo "$ANALYSIS_RUN"
+echo "$PRE_ANALYSIS"
+
+oc get analysisrun "$PRE_ANALYSIS" \
+  -n bluegreen-demo \
+  -o yaml
+```
+
+View the three preview smoke checks:
+
+```bash
+oc logs \
+  -n bluegreen-demo \
+  -l app=bluegreen-demo-analysis \
+  --tail=-1
+```
+
+Before promotion, active and preview hashes must differ:
+
+```bash
+oc get svc \
+  bluegreen-demo-active \
+  bluegreen-demo-preview \
+  -n bluegreen-demo \
+  -o jsonpath='{range .items[*]}{.metadata.name}{" -> "}{.spec.selector.rollouts-pod-template-hash}{"\n"}{end}'
+```
+
+### 8. Test both OpenShift Routes
+
+```bash
+ACTIVE_HOST="$(oc get route bluegreen-demo \
+  -n bluegreen-demo \
+  -o jsonpath='{.spec.host}')"
+
+PREVIEW_HOST="$(oc get route bluegreen-demo-preview \
+  -n bluegreen-demo \
+  -o jsonpath='{.spec.host}')"
+
+echo "ACTIVE : https://${ACTIVE_HOST}"
+echo "PREVIEW: https://${PREVIEW_HOST}"
+```
+
+Optional HTTP checks:
+
+```bash
+curl -sk \
+  -o /dev/null \
+  -w 'ACTIVE HTTP %{http_code}\n' \
+  "https://${ACTIVE_HOST}/"
+
+curl -sk \
+  -o /dev/null \
+  -w 'PREVIEW HTTP %{http_code}\n' \
+  "https://${PREVIEW_HOST}/"
+```
+
+### 9. Promote GREEN manually
+
+Only after the pre-promotion AnalysisRun is `Successful`:
+
+```bash
+oc argo rollouts promote bluegreen-demo \
+  -n bluegreen-demo
+```
+
+The production Route itself does not change. Argo Rollouts changes the selector of `bluegreen-demo-active` to the GREEN hash.
+
+Watch the Rollout:
+
+```bash
+oc argo rollouts get rollout bluegreen-demo \
+  -n bluegreen-demo \
+  --watch
+```
+
+### 10. Inspect post-promotion analysis
+
+Get the post-promotion AnalysisRun:
+
+```bash
+POST_ANALYSIS="$(oc get rollout bluegreen-demo \
+  -n bluegreen-demo \
+  -o jsonpath='{.status.blueGreen.postPromotionAnalysisRunStatus.name}')"
+
+echo "$POST_ANALYSIS"
 ```
 
 Inspect it:
 
 ```bash
-oc get analysisrun "$ANALYSIS_RUN" \
+oc get analysisrun "$POST_ANALYSIS" \
   -n bluegreen-demo \
   -o yaml
 ```
 
-View smoke-test Job/Pod output:
+View the five production smoke checks:
 
 ```bash
-oc get job,pod \
-  -n bluegreen-demo \
-  -l app=bluegreen-demo-analysis \
-  -o wide
-
 oc logs \
   -n bluegreen-demo \
-  -l app=bluegreen-demo-analysis \
+  -l app=bluegreen-demo-post-analysis \
   --tail=-1
 ```
 
----
+If the post analysis fails or errors, Argo Rollouts aborts and restores the active Service to the previous stable ReplicaSet.
 
-# Promotion
-
-After successful analysis, `autoPromotionEnabled: false` still provides the manual gate.
-
-Promote manually:
+### 11. Verify final stable state
 
 ```bash
-oc argo rollouts promote bluegreen-demo \
-  -n bluegreen-demo
-```
-
-Or let `scripts/switch-green.sh` perform that command after it confirms analysis success.
-
-Argo Rollouts switches:
-
-```text
-bluegreen-demo-active
-        |
-        +-- before promotion --> BLUE hash
-        |
-        +-- after promotion ---> GREEN hash
-```
-
-The production OpenShift Route never changes.
-
-The old BLUE ReplicaSet remains available for:
-
-```yaml
-scaleDownDelaySeconds: 30
-```
-
-and is then scaled down.
-
----
-
-# Preview-only mode
-
-Run:
-
-```bash
-bash scripts/switch-green.sh --preview-only
-```
-
-This still waits for:
-
-```text
-GREEN Ready
-    |
-    v
-AnalysisRun Successful
-```
-
-but does not call `promote`.
-
-The resulting state is:
-
-```text
-Production -> BLUE
-Preview    -> GREEN
-Analysis   -> Successful
-```
-
-Promote later with:
-
-```bash
-oc argo rollouts promote bluegreen-demo \
-  -n bluegreen-demo
-```
-
----
-
-# Failure behavior
-
-If the preview HTTP checks fail:
-
-```text
-GREEN Ready
-    |
-    v
-AnalysisRun
-    |
-    v
-smoke-test Job fails
-    |
-    v
-AnalysisRun Failed
-    |
-    v
-Rollout Aborted
-    |
-    v
-ACTIVE Service remains BLUE
-```
-
-Useful diagnostics:
-
-```bash
-oc argo rollouts get rollout bluegreen-demo \
-  -n bluegreen-demo
-
-oc get analysisrun \
-  -n bluegreen-demo
-
-oc get job,pod \
+oc get rollout bluegreen-demo \
   -n bluegreen-demo \
-  -l app=bluegreen-demo-analysis \
-  -o wide
+  -o jsonpath='phase={.status.phase} stableRS={.status.stableRS}{"\n"}'
 
-oc logs \
+oc get svc \
+  bluegreen-demo-active \
+  bluegreen-demo-preview \
   -n bluegreen-demo \
-  -l app=bluegreen-demo-analysis \
-  --tail=-1
+  -o jsonpath='{range .items[*]}{.metadata.name}{" -> "}{.spec.selector.rollouts-pod-template-hash}{"\n"}{end}'
 ```
 
-After diagnosing a failed candidate, revert the GREEN desired-state commit in Git before retrying.
+A completed rollout is `Healthy`, and the active/preview Service selectors point to the new stable GREEN ReplicaSet.
 
----
+## Failure behavior
 
-# Ownership
+Pre-promotion failure:
 
-Git / Argo CD owns:
-
-- the `Rollout` specification;
-- `AnalysisTemplate`;
-- desired container image;
-- replica count;
-- base active/preview Service definitions;
-- OpenShift Routes;
-- blue/green and analysis configuration.
-
-Argo Rollouts owns:
-
-- stable and preview ReplicaSets;
-- `rollouts-pod-template-hash` selectors;
-- generated `AnalysisRun`;
-- generated analysis Job;
-- analysis result;
-- pause/promotion state;
-- switching the active Service;
-- abort behavior;
-- delayed scale-down of the previous stable revision.
-
-`argocd/application.yaml` ignores only the Rollouts-owned Service hash selector and uses:
-
-```yaml
-RespectIgnoreDifferences=true
+```text
+GREEN preview
+   |
+pre-analysis fails
+   |
+Rollout aborts
+   |
+ACTIVE remains BLUE
 ```
 
-so Argo CD self-heal does not fight the Rollouts controller.
+Post-promotion failure:
 
----
+```text
+ACTIVE switches to GREEN
+   |
+post-analysis fails/errors
+   |
+Rollout aborts
+   |
+ACTIVE switches back to previous stable BLUE
+```
 
-# Useful diagnostics
+After a failed candidate, reconcile Git back to the intended stable version before starting another attempt.
+
+## Useful diagnostics
 
 ```bash
-oc get application bluegreen-demo \
-  -n openshift-gitops \
-  -o yaml
-
 oc argo rollouts get rollout bluegreen-demo \
   -n bluegreen-demo
 
@@ -614,31 +508,36 @@ oc get rs,pod \
   -l app=bluegreen-demo \
   -o wide
 
-oc get svc \
-  bluegreen-demo-active \
-  bluegreen-demo-preview \
-  -n bluegreen-demo \
-  -o yaml
-
-oc get route \
+oc get svc,route \
   -n bluegreen-demo
+
+oc get applications.argoproj.io bluegreen-demo \
+  -n openshift-gitops \
+  -o yaml
 ```
 
-## Script tuning
+## Quick reference
 
-Both scripts support:
+Recommended live-demo sequence:
+
+```bash
+bash scripts/deploy-demo.sh
+bash scripts/prepare-blue.sh
+bash scripts/switch-green.sh --preview-only
+bash scripts/promote-bluegreen.sh
+```
+
+One-command GREEN switch after BLUE is stable:
+
+```bash
+bash scripts/switch-green.sh
+```
+
+Timeout overrides:
 
 ```bash
 TIMEOUT_SECONDS=600 bash scripts/deploy-demo.sh
-TIMEOUT_SECONDS=600 bash scripts/switch-green.sh
-```
-
-The default timeout is 300 seconds and the default polling interval is 5 seconds.
-
-Environment overrides:
-
-```text
-NAMESPACE
-ARGOCD_NAMESPACE
-APP_NAME
+TIMEOUT_SECONDS=600 bash scripts/prepare-blue.sh
+TIMEOUT_SECONDS=600 bash scripts/switch-green.sh --preview-only
+TIMEOUT_SECONDS=600 bash scripts/promote-bluegreen.sh
 ```
