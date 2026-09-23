@@ -2,6 +2,17 @@
 
 This directory contains two complementary autoscaling demonstrations:
 
+> **KEDA-only presentation path:** if the goal is to demonstrate only KEDA on
+> Red Hat OpenShift 4.20+, use `keda/README.md`. The complete demo is a single
+> command:
+>
+> ```bash
+> ./scripts/run-keda-demo.sh
+> ```
+>
+> This path does not require Knative Serving. The remaining Knative files are
+> retained as a separate example but are not part of the KEDA presentation.
+
 1. **Knative Serving** for synchronous HTTP request traffic, immutable Revisions, tagged candidate URLs, traffic splitting, scale-to-zero, and cold activation.
 2. **Red Hat Custom Metrics Autoscaler (KEDA)** for an asynchronous worker whose replica count is driven by an external Prometheus metric.
 
