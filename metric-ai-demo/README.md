@@ -79,7 +79,7 @@ No Gateway API plugin is required.
 
 ## Requirements
 
-- Red Hat OpenShift Container Platform 4.20+
+- Red Hat OpenShift Container Platform 4.19+
 - Red Hat OpenShift GitOps with `RolloutManager`
 - `oc argo rollouts` CLI plugin
 - amd64 nodes for the published upstream metric-plugin binary

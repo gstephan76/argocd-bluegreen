@@ -271,8 +271,8 @@ minor="${minor_rest%%.*}"
 [[ "$major" =~ ^[0-9]+$ && "$minor" =~ ^[0-9]+$ ]] || \
   die "Could not parse OpenShift version: $cluster_version"
 
-if (( major < 4 || (major == 4 && minor < 20) )); then
-  die "OpenShift ${cluster_version} is older than the demo requirement (4.20+)"
+if (( major < 4 || (major == 4 && minor < 19) )); then
+  die "OpenShift ${cluster_version} is older than the demo requirement (4.19+)"
 fi
 pass "OpenShift version ${cluster_version}"
 
