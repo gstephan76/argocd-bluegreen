@@ -15,12 +15,12 @@ spec:
       labels:
         app: metric-ai-demo
       annotations:
-        demo-rollout-revision: "ai-healthy-20260923T234541Z-3185981"
+        demo-rollout-revision: "ai-nullpointer-20260923T235327Z-3193568"
     spec:
       serviceAccountName: metric-ai-demo
       containers:
         - name: metric-ai-demo
-          image: ghcr.io/kdubois/argo-rollouts-quarkus-demo:v1.stable
+          image: ghcr.io/kdubois/argo-rollouts-quarkus-demo:v2.nullpointer
           imagePullPolicy: Always
           ports:
             - name: http
