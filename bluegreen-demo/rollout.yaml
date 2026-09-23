@@ -20,7 +20,7 @@ spec:
         - name: rollouts-demo
           # Initial stable version (BLUE).
           # Change this tag to :green in Git to start a blue/green rollout.
-          image: argoproj/rollouts-demo:green
+          image: argoproj/rollouts-demo:blue
           imagePullPolicy: Always
           ports:
             - name: http
