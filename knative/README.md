@@ -96,6 +96,124 @@ knative/
 
 # Scripted execution
 
+## Live session: scripts and terminals
+
+The Knative directory contains two separate demonstrations. Run the Knative
+Serving session and the KEDA session independently during a presentation.
+
+### Knative Serving session
+
+**Terminal 1 — operator/control**
+
+Run these scripts sequentially:
+
+```bash
+cd ~/Documents/POCs/ArgoCD/knative
+
+./scripts/install-serverless.sh
+./scripts/deploy.sh
+./scripts/verify.sh
+
+# Scale-to-zero and cold activation.
+./scripts/verify.sh --scale-to-zero
+
+# Revision and traffic-management demonstration.
+./scripts/new-revision.sh
+./scripts/split-traffic.sh 50
+./scripts/promote-v2.sh
+```
+
+Wait for each command to finish before running the next one. While
+`verify.sh --scale-to-zero` is waiting for zero Pods, do not refresh the
+application URL because that traffic keeps the Revision active.
+
+**Terminal 2 — Knative resources**
+
+```bash
+watch -n 2 '
+oc get ksvc,configuration,revision,pod \
+  -n knative-httpd
+'
+```
+
+**Terminal 3 — Knative routing**
+
+Optional when explaining Revision traffic:
+
+```bash
+watch -n 2 '
+oc get ksvc,route \
+  -n knative-httpd
+'
+```
+
+### KEDA session
+
+Present KEDA as two explicit phases.
+
+**Terminal 1 — Phase 1: declarative deployment**
+
+```bash
+cd ~/Documents/POCs/ArgoCD/knative
+
+# Show the declarative autoscaling policy.
+bat keda/app/scaledobject.yaml
+
+./scripts/01-deploy-keda-demo.sh
+```
+
+The Step 1 helper installs/reconciles the Red Hat Custom Metrics Autoscaler,
+reuses the OpenShift user-workload Prometheus/Thanos stack already used by the
+Canary demo, applies the existing KEDA manifests, and establishes the
+zero-backlog / zero-worker baseline.
+
+**Terminal 2 — KEDA/HPA/workload watch**
+
+Start this before Step 2 and leave it running:
+
+```bash
+watch -n 2 '
+oc get scaledobject,hpa,deployment,pod \
+  -n knative-httpd
+'
+```
+
+**Terminal 3 — Prometheus/KEDA objects**
+
+Optional for explaining the metrics path:
+
+```bash
+watch -n 2 '
+oc get servicemonitor,triggerauthentication \
+  -n knative-httpd
+'
+```
+
+**Terminal 1 — Phase 2: scale out and scale in**
+
+```bash
+./scripts/02-scale-keda-demo.sh
+```
+
+The expected sequence is:
+
+```text
+backlog 0  -> workers 0
+backlog 50 -> workers 5
+backlog 5  -> workers 1
+backlog 0  -> workers 0
+```
+
+The intended KEDA session is:
+
+```text
+Terminal 1                         Terminal 2                  Terminal 3
+----------                         ----------                  ----------
+show scaledobject.yaml             KEDA/HPA/workers            metrics objects
+01-deploy-keda-demo.sh             baseline workers=0
+02-scale-keda-demo.sh              0 -> 5 -> 1 -> 0            Prometheus path
+```
+
 Run from the Knative directory:
 
 ```bash

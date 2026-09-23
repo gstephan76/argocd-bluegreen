@@ -65,6 +65,70 @@ Only after this AnalysisRun succeeds is the candidate marked stable.
 
 ## Recommended scripted demo
 
+### Live session: scripts and terminals
+
+Use three terminals for the clearest presentation.
+
+**Terminal 1 — operator/control**
+
+Run the Blue/Green workflow here, in this exact order. Wait for each script to
+finish successfully before starting the next one:
+
+```bash
+cd ~/Documents/POCs/ArgoCD
+
+bash scripts/deploy-demo.sh
+bash scripts/prepare-blue.sh
+bash scripts/switch-green.sh --preview-only
+
+# At this point:
+#   Production Route -> BLUE
+#   Preview Route    -> GREEN
+# Inspect both URLs before the cutover.
+
+bash scripts/promote-bluegreen.sh
+```
+
+**Terminal 2 — live Rollout view**
+
+Start this before `switch-green.sh --preview-only` and leave it running:
+
+```bash
+cd ~/Documents/POCs/ArgoCD
+
+oc argo rollouts get rollout bluegreen-demo \
+  -n bluegreen-demo \
+  --watch
+```
+
+**Terminal 3 — analysis and workload details**
+
+This terminal is optional but useful while explaining the pre- and
+post-promotion checks:
+
+```bash
+watch -n 2 '
+oc get analysisrun,job,rs,pod \
+  -n bluegreen-demo
+'
+```
+
+The intended session is:
+
+```text
+Terminal 1                         Terminal 2                  Terminal 3
+----------                         ----------                  ----------
+deploy-demo.sh                     Rollout status              analysis/jobs
+prepare-blue.sh                    BLUE stable                 BLUE analyses
+switch-green.sh --preview-only     GREEN preview / Paused      pre-analysis
+inspect active + preview Routes
+promote-bluegreen.sh               GREEN active / stable       post-analysis
+```
+
+Do not start `switch-green.sh --preview-only` until `prepare-blue.sh` has
+returned successfully. Do not run `promote-bluegreen.sh` until the
+preview-only script has returned after a successful pre-promotion analysis.
+
 Run from the repository root:
 
 ```bash

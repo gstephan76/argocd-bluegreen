@@ -135,6 +135,67 @@ The normal application Service and the existing public Route are left unchanged.
 
 ## Scripted demo
 
+### Live session: scripts and terminals
+
+Use three terminals for the clearest presentation.
+
+**Terminal 1 — operator/control**
+
+Run the Canary workflow here, in this exact order:
+
+```bash
+cd ~/Documents/POCs/ArgoCD
+
+bash scripts/deploy-canary-demo.sh
+bash scripts/start-canary-yellow.sh
+
+# Wait until the script reaches the final manual pause at step 6/7.
+
+bash scripts/promote-canary-stable.sh
+```
+
+`start-canary-yellow.sh` drives the rollout automatically through the 33%,
+66%, and 100% Prometheus gates. No operator command is required between those
+stages.
+
+**Terminal 2 — live Rollout view**
+
+Start this before `start-canary-yellow.sh` and leave it running:
+
+```bash
+cd ~/Documents/POCs/ArgoCD
+
+oc argo rollouts get rollout rollouts-canary-demo \
+  -n rollouts-canary-demo \
+  --watch
+```
+
+**Terminal 3 — Prometheus-gated AnalysisRuns**
+
+This terminal is optional but useful for showing each analysis gate:
+
+```bash
+watch -n 2 '
+oc get analysisrun \
+  -n rollouts-canary-demo \
+  --sort-by=.metadata.creationTimestamp
+'
+```
+
+The intended session is:
+
+```text
+Terminal 1                         Terminal 2                  Terminal 3
+----------                         ----------                  ----------
+deploy-canary-demo.sh              Rollout status              AnalysisRuns
+start-canary-yellow.sh             33% -> 66% -> 100%         gate results
+                                   final pause step 6/7
+promote-canary-stable.sh           candidate -> stable
+```
+
+The only manual rollout decision is the final
+`promote-canary-stable.sh` after the rollout reaches step `6/7`.
+
 Run from the repository root:
 
 ```bash
