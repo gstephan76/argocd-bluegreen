@@ -18,9 +18,9 @@ spec:
       serviceAccountName: metric-ai-kubernetes-agent
       containers:
         - name: agent
-          # Follow the upstream Kubernetes deployment, which publishes/uses
-          # this public Quay image for cluster deployments.
-          image: quay.io/kevindubois/kubernetes-agent:latest
+          # Pin the exact upstream Quay image verified by this demo so a
+          # presentation cannot drift when the mutable latest tag changes.
+          image: quay.io/kevindubois/kubernetes-agent@sha256:ec942d19e381d25435ca6184e4fe9d203208106567345b722c60108520fc0dd3
           imagePullPolicy: IfNotPresent
           ports:
             - name: http

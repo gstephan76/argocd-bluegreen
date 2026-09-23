@@ -15,7 +15,7 @@ spec:
       labels:
         app: metric-ai-demo
       annotations:
-        demo-rollout-revision: "ai-healthy-20260923T210433Z-3054850"
+        demo-rollout-revision: "baseline-v1"
     spec:
       serviceAccountName: metric-ai-demo
       containers:

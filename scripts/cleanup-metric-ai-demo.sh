@@ -25,6 +25,7 @@ oc delete deployment "$AGENT_NAME" -n "$ARGOCD_NAMESPACE" --ignore-not-found
 oc delete service "$AGENT_NAME" -n "$ARGOCD_NAMESPACE" --ignore-not-found
 oc delete serviceaccount "$AGENT_NAME" -n "$ARGOCD_NAMESPACE" --ignore-not-found
 oc delete secret "$AGENT_NAME" -n "$ARGOCD_NAMESPACE" --ignore-not-found
+oc delete secret metric-ai-github-bootstrap -n "$ARGOCD_NAMESPACE" --ignore-not-found
 
 if [[ "$MODE" == "--platform" ]]; then
   existing="$(

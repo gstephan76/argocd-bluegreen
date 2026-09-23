@@ -35,8 +35,8 @@ roleRef:
   name: metric-ai-demo
 ---
 # The metric-ai provider runs inside the Argo Rollouts controller process and
-# needs to read stable/canary pod logs. The deploy helper creates a RoleBinding
-# to this Role for the controller's discovered ServiceAccount.
+# needs to read stable/canary pod logs. The Role is declarative; pre-flight
+# discovers the controller ServiceAccount and reconciles the matching binding.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:

@@ -5,13 +5,9 @@ Production Rollout Fixes”** and the upstream
 `argoproj-labs/rollouts-plugin-metric-ai` project to this repository's
 OpenShift GitOps workflow.
 
-The key change from the existing Prometheus Canary demo is the decision source:
+The decision path is:
 
 ```text
-existing canary:
-Prometheus/Blackbox -> fixed conditions -> Argo Rollouts
-
-metric-ai demo:
 stable + canary logs / Kubernetes evidence
                   |
                   v
@@ -31,70 +27,45 @@ stable + canary logs / Kubernetes evidence
 ```
 
 The base demo intentionally stops at AI-assisted rollout analysis and
-promotion/rollback. Automated GitHub remediation is documented separately and
-disabled by default.
+promotion/rollback. GitHub source-code remediation is optional and disabled in
+the base manifests.
 
-## Source projects
+## Sources and scenarios
 
 - Video: `https://youtu.be/FH_fNfE90sU`
 - Metric provider: `https://github.com/argoproj-labs/rollouts-plugin-metric-ai`
 - Kubernetes AI agent: `https://github.com/kdubois/kubernetes-aiops-agent`
 - Scenario application: `https://github.com/kdubois/argo-rollouts-quarkus-demo`
 
-The upstream application provides:
+Scenario images:
 
 ```text
 v1.stable       healthy scenario
 v2.nullpointer  intentional NullPointerException scenario
 ```
 
-It also includes a built-in request generator, so the canary produces
-application evidence before the AnalysisRun without a separate load generator.
-
-## OpenShift-specific simplification
-
-The upstream demo includes additional traffic-routing pieces. This repository
-uses a basic four-replica canary so the audience can focus on the AI metric
-provider:
-
-```text
-4 stable pods
-     |
-new revision
-     |
-setWeight 25
-     |
-3 stable + 1 canary
-     |
-20 second evidence window
-     |
-AI AnalysisRun
-     |
-     +-- Failed -----> automatic abort / stable remains
-     |
-     +-- Successful -> setWeight 100 -> manual approval -> stable
-```
-
-No Gateway API plugin is required.
+The application includes its own request generator, so the canary produces
+evidence before the AnalysisRun without a separate load generator.
 
 ## Requirements
 
 - Red Hat OpenShift Container Platform 4.19+
 - Red Hat OpenShift GitOps with `RolloutManager`
 - `oc argo rollouts` CLI plugin
-- amd64 nodes for the published upstream metric-plugin binary
+- amd64 nodes for the published metric-provider binary
 - an OpenAI-compatible model endpoint reachable by the Kubernetes AI agent
 
-The upstream metric provider currently has two published binary releases used
-by this demo:
+The metric-provider installer supports the published releases used by this
+demo:
 
 ```text
 v0.0.1 -> built against Argo Rollouts v1.8.0
 v1.9.0 -> built against Argo Rollouts v1.9.0
 ```
 
-The installer uses the local Rollouts CLI version as a compatibility hint. You
-can override it explicitly:
+The installer keeps version selection dynamic because the RolloutManager is a
+shared platform resource and controller/plugin compatibility matters. Override
+the compatibility hint when required:
 
 ```bash
 METRIC_AI_PLUGIN_VERSION=v0.0.1 \
@@ -110,10 +81,10 @@ bash scripts/install-metric-ai-plugin.sh
 
 ## Model configuration
 
-The metric plugin does not store the model API key. The Kubernetes AI agent
-does.
+The metric plugin does not store model credentials. The Kubernetes AI agent
+uses the runtime Secret `openshift-gitops/metric-ai-kubernetes-agent`.
 
-Example OpenAI configuration:
+OpenAI example:
 
 ```bash
 export ANALYSIS_API_KEY='...'
@@ -121,7 +92,7 @@ export ANALYSIS_BASE_URL='https://api.openai.com/v1'
 export ANALYSIS_MODEL='gpt-4o'
 ```
 
-Example LiteLLM/vLLM-compatible endpoint:
+LiteLLM/vLLM example:
 
 ```bash
 export ANALYSIS_API_KEY='dummy'
@@ -129,175 +100,164 @@ export ANALYSIS_BASE_URL='http://<service>:<port>/v1'
 export ANALYSIS_MODEL='<model-name>'
 ```
 
-Never commit API keys to Git.
+Never commit model API keys to Git.
 
-## Pre-flight and recovery
+### Declarative GitHub bootstrap value
 
-Before starting a scenario, validate the complete environment:
+The upstream agent currently requires `github.token` to be non-empty even when
+GitHub remediation is disabled. The base demo satisfies that startup contract
+declaratively with:
 
-```bash
-bash scripts/preflight-metric-ai-demo.sh
+```text
+metric-ai-demo/agent/github-bootstrap-secret.yaml
 ```
 
-For the normal presentation/bootstrap path, use safe remediation:
+which contains the inert value:
+
+```text
+metric-ai-remediation-disabled
+```
+
+It is deliberately not a credential and grants no GitHub access. No manual
+`oc patch secret` step is required.
+
+## Recommended presenter workflow
+
+Use the launcher as the presentation interface:
+
+```bash
+cd ~/Documents/POCs/ArgoCD
+./scripts/run-metric-ai-demo.sh --help
+```
+
+Before the audience arrives:
+
+```bash
+./scripts/run-metric-ai-demo.sh prepare
+```
+
+`prepare` delegates to the same robust pre-flight used by the scenario scripts:
 
 ```bash
 bash scripts/preflight-metric-ai-demo.sh --remediate
 ```
 
-`--remediate` reconciles safe, idempotent infrastructure drift such as the
-metric plugin, namespace, agent resources, Argo CD Application, and required
-RoleBindings. It does not commit or push Git changes and it does not promote,
-abort, or reset a Rollout.
-
-The AI agent image follows the upstream Kubernetes deployment:
+The expected terminal condition is:
 
 ```text
-quay.io/kevindubois/kubernetes-agent:latest
+============================================================
+ Metric-AI pre-flight: READY
+============================================================
 ```
 
-If the agent cannot start, the pre-flight reports image/configuration failures
-immediately instead of waiting for the full deployment timeout. Useful manual
-checks are:
+For validation without remediation:
 
 ```bash
-oc get pod   -n openshift-gitops   -l app=metric-ai-kubernetes-agent   -o wide
-
-oc get events   -n openshift-gitops   --sort-by='.lastTimestamp' |
-tail -40
+./scripts/run-metric-ai-demo.sh check
 ```
 
-# Live demo: terminals and scripts
+### Live presentation
 
-Use three terminals.
-
-## Terminal 1 — operator/control
-
-Deploy the platform pieces, agent, and GitOps application:
+Terminal 1 — presenter:
 
 ```bash
-cd ~/Documents/POCs/ArgoCD
-
-bash scripts/deploy-metric-ai-demo.sh
+./scripts/run-metric-ai-demo.sh healthy
+./scripts/run-metric-ai-demo.sh promote
+./scripts/run-metric-ai-demo.sh failure
+./scripts/run-metric-ai-demo.sh analysis
 ```
 
-### Healthy path
+Terminal 2 — Rollout state:
 
 ```bash
-bash scripts/start-metric-ai-healthy.sh
+./scripts/run-metric-ai-demo.sh watch
 ```
 
-Expected:
+Terminal 3 — AI agent:
+
+```bash
+./scripts/run-metric-ai-demo.sh agent-logs
+```
+
+Optional split pane for the provider/controller side:
+
+```bash
+./scripts/run-metric-ai-demo.sh controller-logs
+```
+
+For rehearsal:
+
+```bash
+./scripts/run-metric-ai-demo.sh full
+```
+
+which performs:
 
 ```text
-25% canary
-   |
-AI compares stable/canary evidence
-   |
-AnalysisRun Successful
-   |
-100% candidate
-   |
-final manual pause
+prepare -> healthy -> promote -> failure
 ```
 
-Inspect the AI decision:
+and intentionally leaves the rejected failure scenario visible for inspection.
 
-```bash
-bash scripts/show-metric-ai-analysis.sh
-```
+## Pre-flight behavior
 
-Then explicitly approve the candidate:
+The pre-flight validates the complete dependency chain before a scenario script
+is allowed to edit `rollout.yaml`, commit, or push.
 
-```bash
-bash scripts/promote-metric-ai-stable.sh
-```
-
-### Failure path
-
-Restore the known-good baseline first when necessary:
-
-```bash
-bash scripts/reset-metric-ai-demo.sh
-```
-
-Start the intentional NullPointerException candidate:
-
-```bash
-bash scripts/start-metric-ai-failure.sh
-```
-
-Expected:
+With `--remediate` it may safely reconcile:
 
 ```text
-25% broken canary
-      |
-AI AnalysisRun
-      |
-promotion=false
-      |
-AnalysisRun Failed
-      |
-Rollout aborts
-      |
-previous stable ReplicaSet remains
+metric-ai RolloutManager plugin configuration
+metric-ai-demo namespace
+runtime AI-agent model Secret when ANALYSIS_API_KEY is supplied
+declarative agent resources
+Argo CD Application
+Argo CD refresh/synchronization
+Rollouts-controller pod-log RoleBinding
 ```
 
-Inspect the real decision:
+It deliberately stops on ambiguous or unsafe states such as a dirty tracked
+tree, local/origin divergence, wrong repository/branch, unsupported
+architecture, conflicting metric plugin, unfinished paused Rollout, degraded
+Rollout, or unhealthy agent/model path.
 
-```bash
-bash scripts/show-metric-ai-analysis.sh
-```
-
-## Terminal 2 — Rollout state
-
-Start this before either scenario:
-
-```bash
-oc argo rollouts get rollout metric-ai-demo \
-  -n metric-ai-demo \
-  --watch
-```
-
-## Terminal 3 — AI agent
-
-```bash
-oc logs \
-  -n openshift-gitops \
-  deployment/metric-ai-kubernetes-agent \
-  -f
-```
-
-For the metric-plugin side, use a split pane:
-
-```bash
-oc logs \
-  -n openshift-gitops \
-  deployment/argo-rollouts \
-  -f |
-rg --line-buffered 'metric-ai|AI metric|A2A|agent'
-```
-
-Presentation rhythm:
+The agent image is pinned for reproducible presentation runs:
 
 ```text
-Terminal 1                    Terminal 2                 Terminal 3
-----------                    ----------                 ----------
-deploy-metric-ai-demo.sh      stable rollout            agent ready
-start healthy/failure         25% canary                A2A/AI analysis
-show analysis                 success/failure           reasoning
-promote healthy candidate     candidate -> stable
+quay.io/kevindubois/kubernetes-agent@sha256:ec942d19e381d25435ca6184e4fe9d203208106567345b722c60108520fc0dd3
 ```
 
-# What to show in YAML
+Image/configuration failures and CrashLoopBackOff are surfaced immediately by
+the pre-flight.
 
-The core AnalysisTemplate is deliberately small:
+## Underlying scripts
+
+The launcher is only a thin presentation layer. The implementation scripts are:
+
+```text
+scripts/preflight-metric-ai-demo.sh
+scripts/deploy-metric-ai-demo.sh
+scripts/install-metric-ai-plugin.sh
+scripts/start-metric-ai-healthy.sh
+scripts/promote-metric-ai-stable.sh
+scripts/start-metric-ai-failure.sh
+scripts/show-metric-ai-analysis.sh
+scripts/reset-metric-ai-demo.sh
+scripts/cleanup-metric-ai-demo.sh
+```
+
+`deploy-metric-ai-demo.sh` is intentionally a compatibility wrapper around the
+robust pre-flight so bootstrap/recovery logic is not duplicated.
+
+## What to show in YAML
+
+AnalysisTemplate:
 
 ```bash
 bat metric-ai-demo/app/analysis-template.yaml
 ```
 
-Core provider configuration:
+Core provider:
 
 ```yaml
 provider:
@@ -306,17 +266,15 @@ provider:
       agentUrl: http://metric-ai-kubernetes-agent.openshift-gitops.svc.cluster.local:8080
       stableLabel: app=metric-ai-demo,role=stable
       canaryLabel: app=metric-ai-demo,role=canary
-      extraPrompt: >-
-        Compare the canary against the stable pods...
 ```
 
-The Rollout is equally explicit:
+Rollout:
 
 ```bash
 bat metric-ai-demo/app/rollout.yaml
 ```
 
-The significant steps are:
+Core steps:
 
 ```yaml
 steps:
@@ -330,97 +288,76 @@ steps:
   - pause: {}
 ```
 
-# Security and RBAC
+The baseline annotation is deliberately stable (`baseline-v1`). Scenario
+scripts replace it with a unique run marker only when triggering a new
+revision.
 
-The metric plugin runs as a child process of the Argo Rollouts controller.
-Therefore it inherits that controller's Kubernetes identity. The deploy script
-discovers the controller ServiceAccount and grants only:
+## Security and RBAC
 
-```text
-get/list pods
-get pods/log
-```
+The metric provider runs as a child process of the Argo Rollouts controller, so
+it needs read access to stable/canary pod logs. The Role is Git-managed in
+`metric-ai-demo/app/rbac.yaml`; pre-flight binds it to the controller
+ServiceAccount discovered from the live Rollouts Deployment. The binding stays
+runtime-discovered deliberately so a customized operator ServiceAccount does
+not get hard-coded into Git.
 
-inside `metric-ai-demo`.
+The Kubernetes AI agent gets read-only diagnostic access to `metric-ai-demo`.
+This adaptation does not grant `pods/exec` and does not grant application write
+access.
 
-The Kubernetes AI agent gets read-only diagnostic access to the same namespace.
-This adaptation does not grant `pods/exec` and does not grant write access to
-application resources.
+The model credential Secret remains runtime-only. The inert GitHub bootstrap
+Secret is checked in because it is not a credential.
 
-# Optional GitHub remediation
+## Optional GitHub remediation
 
-The conference workflow and upstream agent can also create an issue or PR after
-a failed rollout. This is intentionally disabled by default.
+The upstream agent can also create an issue or PR after a failed rollout. This
+is disabled in the base demo.
 
-The source code being analyzed belongs to the upstream demo application, so
-giving the agent write access to this `argocd-bluegreen` repository would not
-give it the correct source tree to repair.
+Do not replace `metric-ai-github-bootstrap` in Git with a real token. To
+demonstrate source remediation, use a writable fork of
+`kdubois/argo-rollouts-quarkus-demo`, enable `githubUrl`/`baseBranch` in the
+AnalysisTemplate, and supply the real GitHub token from an external Secret
+manager or a private, untracked overlay that replaces the `GITHUB_TOKEN`
+secretKeyRef.
 
-To demonstrate remediation safely:
+The base repository intentionally contains no real GitHub credential.
 
-1. Fork `kdubois/argo-rollouts-quarkus-demo`.
-2. Enable in `metric-ai-demo/app/analysis-template.yaml`:
+## Reset and cleanup
 
-```yaml
-githubUrl: https://github.com/<your-user>/argo-rollouts-quarkus-demo
-baseBranch: main
-```
-
-3. Export a fine-grained token that can write to that fork:
-
-```bash
-export GITHUB_TOKEN='...'
-```
-
-4. Rerun:
+Restore the known-good baseline:
 
 ```bash
-bash scripts/deploy-metric-ai-demo.sh
+./scripts/run-metric-ai-demo.sh reset
 ```
 
-Review any generated PR before merging it.
-
-# Reset and cleanup
-
-After the intentionally failed canary:
+Delete the demo workload and isolated agent while leaving the shared metric
+plugin installed:
 
 ```bash
-bash scripts/reset-metric-ai-demo.sh
+./scripts/run-metric-ai-demo.sh cleanup
 ```
 
-Delete the demo and isolated AI agent while keeping the metric plugin installed:
+On a disposable environment, also remove the metric plugin:
 
 ```bash
-bash scripts/cleanup-metric-ai-demo.sh
+./scripts/run-metric-ai-demo.sh cleanup-platform
 ```
 
-On a disposable environment, remove the metric plugin configuration as well:
+Cleanup removes both the runtime model Secret and the declarative inert
+`metric-ai-github-bootstrap` Secret from `openshift-gitops`.
+
+## Diagnostics
+
+Current Rollout:
 
 ```bash
-bash scripts/cleanup-metric-ai-demo.sh --platform
+./scripts/run-metric-ai-demo.sh status
 ```
 
-# Diagnostics
-
-Current rollout:
+Latest AI decision:
 
 ```bash
-oc argo rollouts get rollout metric-ai-demo \
-  -n metric-ai-demo
-```
-
-AnalysisRuns:
-
-```bash
-oc get analysisrun \
-  -n metric-ai-demo \
-  --sort-by=.metadata.creationTimestamp
-```
-
-AI decision:
-
-```bash
-bash scripts/show-metric-ai-analysis.sh
+./scripts/run-metric-ai-demo.sh analysis
 ```
 
 Candidate logs:
@@ -444,30 +381,29 @@ oc logs \
 Agent:
 
 ```bash
-oc get deployment metric-ai-kubernetes-agent \
-  -n openshift-gitops
-
-oc logs deployment/metric-ai-kubernetes-agent \
+oc logs \
   -n openshift-gitops \
+  deployment/metric-ai-kubernetes-agent \
   --tail=200
 ```
 
-Plugin/controller:
+Provider/controller:
 
 ```bash
-oc logs deployment/argo-rollouts \
+oc logs \
   -n openshift-gitops \
+  deployment/argo-rollouts \
   --tail=300 |
 rg 'metric-ai|AI metric|A2A|agent'
 ```
 
 ## Important behavior
 
-The plugin has no silent fallback if the agent cannot be reached or A2A
+The provider has no silent fallback if the agent cannot be reached or A2A
 analysis fails: the AnalysisRun errors rather than silently approving the
 candidate.
 
 AI model decisions are probabilistic. The `v2.nullpointer` image is designed
-to produce strong failure evidence, but the demo should always display the
-actual AnalysisRun result rather than claiming the model must return a
-particular decision.
+to produce strong failure evidence, but the demo should display the actual
+AnalysisRun result rather than claim the model must return a particular
+decision.
