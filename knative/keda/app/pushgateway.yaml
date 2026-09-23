@@ -1,0 +1,65 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: keda-demo-pushgateway
+  namespace: knative-httpd
+  labels:
+    app: keda-demo-pushgateway
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: keda-demo-pushgateway
+  template:
+    metadata:
+      labels:
+        app: keda-demo-pushgateway
+    spec:
+      containers:
+        - name: pushgateway
+          image: quay.io/prometheus/pushgateway:v1.11.3
+          args:
+            - --web.listen-address=:9091
+          ports:
+            - name: web
+              containerPort: 9091
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: keda-demo-pushgateway
+  namespace: knative-httpd
+  labels:
+    app: keda-demo-pushgateway
+spec:
+  selector:
+    app: keda-demo-pushgateway
+  ports:
+    - name: web
+      port: 9091
+      targetPort: web
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: keda-demo-pushgateway
+  namespace: knative-httpd
+spec:
+  selector:
+    matchLabels:
+      app: keda-demo-pushgateway
+  endpoints:
+    - port: web
+      path: /metrics
+      interval: 5s
+      scrapeTimeout: 4s
+      metricRelabelings:
+        - targetLabel: demo
+          replacement: knative-keda

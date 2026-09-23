@@ -1,0 +1,34 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: keda-async-worker
+  namespace: knative-httpd
+  labels:
+    app: keda-async-worker
+spec:
+  replicas: 0
+  selector:
+    matchLabels:
+      app: keda-async-worker
+  template:
+    metadata:
+      labels:
+        app: keda-async-worker
+    spec:
+      containers:
+        - name: worker
+          image: registry.access.redhat.com/ubi9/ubi-minimal:latest
+          command:
+            - /bin/sh
+            - -c
+            - |
+              echo "KEDA async worker started on $(hostname)"
+              trap 'exit 0' TERM INT
+              while true; do sleep 3600 & wait $!; done
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 50m
+              memory: 64Mi

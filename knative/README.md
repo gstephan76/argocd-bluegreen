@@ -1,8 +1,48 @@
-# Knative HTTPD single-page demo
+# OpenShift Serverless / Knative Serving + KEDA demo
 
-This directory is an independent OpenShift Serverless / Knative Serving example. It does not change the existing Argo CD blue-green demo in this repository.
+This directory contains two complementary autoscaling demonstrations:
 
-The demo deploys a static single-page application with the Red Hat UBI 9 Apache HTTP Server image (`registry.access.redhat.com/ubi9/httpd-24`) as a Knative `Service`. The application listens on port `8080`, uses the Knative Pod Autoscaler, and is explicitly configured with `min-scale: 0` so it can scale to zero when idle.
+1. **Knative Serving** for synchronous HTTP request traffic, immutable Revisions, tagged candidate URLs, traffic splitting, scale-to-zero, and cold activation.
+2. **Red Hat Custom Metrics Autoscaler (KEDA)** for an asynchronous worker whose replica count is driven by an external Prometheus metric.
+
+They intentionally do **not** control the same Pods.
+
+```text
+HTTP request path                           asynchronous/event path
+
+client                                     external backlog metric
+  |                                                |
+  v                                                v
+Knative Service                           OpenShift Prometheus/Thanos
+  |                                                |
+  v                                                v
+KPA                                        KEDA Prometheus scaler
+  |                                                |
+  v                                                v
+Knative Revision                         Kubernetes HPA + Deployment
+```
+
+Knative's KPA owns Knative Revision scaling. KEDA owns only the separate `keda-async-worker` Deployment. This avoids two autoscalers fighting over the same replica count.
+
+## What KEDA adds
+
+Knative Serving already scales HTTP workloads very well from request concurrency or RPS. KEDA becomes useful when demand exists **outside the live HTTP request path**, for example:
+
+- Kafka consumer lag;
+- Prometheus metrics;
+- asynchronous queue or backlog depth;
+- batch/event processing;
+- scheduled or externally measured demand.
+
+For this demo, KEDA uses the **Prometheus scaler**, which is supported by Red Hat's OpenShift Custom Metrics Autoscaler. A tiny Pushgateway publishes a synthetic `demo_async_backlog` metric. OpenShift user-workload Prometheus scrapes it, Thanos exposes it, and KEDA scales `keda-async-worker` from 0 to 5 replicas.
+
+The synthetic metric is deliberate: it keeps the demo self-contained. In a real system, replace it with an application metric, Kafka lag, or another supported production signal.
+
+## Important support boundary
+
+The base demo does **not** install the upstream experimental Knative `autoscaler-keda` extension and does not attach a KEDA `ScaledObject` to Knative's generated Revision Deployment.
+
+Upstream direct KEDA integrations with Knative Serving/Eventing exist, but the Serving extension is Alpha and KEDA scaling for Knative Kafka resources is documented as Alpha/Technology Preview. The default demo therefore uses the supported OpenShift Custom Metrics Autoscaler beside Knative Serving rather than replacing KPA.
 
 ## Layout
 
@@ -10,72 +50,233 @@ The demo deploys a static single-page application with the Red Hat UBI 9 Apache 
 knative/
 ├── README.md
 ├── app/
-│   ├── configmap.yaml
-│   ├── kustomization.yaml
 │   ├── namespace.yaml
-│   └── service.yaml
+│   ├── configmap.yaml
+│   ├── configmap-v2.yaml
+│   ├── service.yaml
+│   └── kustomization.yaml
 ├── platform/
-│   ├── knative-serving.yaml
-│   └── serverless-subscription.yaml
+│   ├── serverless-subscription.yaml
+│   └── knative-serving.yaml
+├── keda/
+│   ├── platform/
+│   │   ├── custom-metrics-autoscaler.yaml
+│   │   └── keda-controller.yaml
+│   └── app/
+│       ├── pushgateway.yaml
+│       ├── worker.yaml
+│       ├── auth.yaml
+│       ├── scaledobject.yaml
+│       └── kustomization.yaml
 └── scripts/
-    ├── cleanup.sh
-    ├── deploy.sh
     ├── install-serverless.sh
-    └── verify.sh
+    ├── deploy.sh
+    ├── verify.sh
+    ├── new-revision.sh
+    ├── split-traffic.sh
+    ├── promote-v2.sh
+    ├── install-keda.sh
+    ├── deploy-keda.sh
+    ├── set-keda-backlog.sh
+    ├── run-keda-demo.sh
+    ├── cleanup-keda.sh
+    └── cleanup.sh
 ```
 
-## Prerequisites
+# Scripted execution
 
-- OpenShift Container Platform with the Red Hat Operator catalog available.
-- `oc` installed and logged in.
-- Cluster-admin privileges are required only when installing the OpenShift Serverless Operator and Knative Serving.
-- Application deployment requires permissions to create resources in the `knative-httpd` namespace.
-- `curl` is required by the verification script.
-
-## 1. Install OpenShift Serverless and Knative Serving
-
-Skip this step if Knative Serving is already installed and `services.serving.knative.dev` is available on the cluster.
+Run from the Knative directory:
 
 ```bash
-cd knative
+cd ~/Documents/POCs/ArgoCD/knative
 chmod +x scripts/*.sh
+```
+
+## A. Knative Serving demo
+
+Install Serverless if needed:
+
+```bash
 ./scripts/install-serverless.sh
 ```
 
-The platform installation is intentionally split into two manifests:
-
-1. `platform/serverless-subscription.yaml` installs the OpenShift Serverless Operator from the `redhat-operators` catalog using the `stable` channel.
-2. `platform/knative-serving.yaml` creates the `KnativeServing` instance in `knative-serving` and explicitly enables scale-to-zero.
-
-Verify the platform manually with:
+Deploy/reset V1:
 
 ```bash
-oc get subscription -n openshift-serverless
-oc get csv -n openshift-serverless
-oc get knativeserving knative-serving -n knative-serving
-oc get pods -n knative-serving
-oc get crd services.serving.knative.dev
-```
-
-## 2. Deploy the HTTPD Knative Service
-
-```bash
-cd knative
 ./scripts/deploy.sh
 ```
 
-The script applies `app/` with Kustomize, waits for the Knative Service to become `Ready`, and prints its externally reachable URL.
+Verify normal HTTP service:
 
-Equivalent manual deployment:
+```bash
+./scripts/verify.sh
+```
+
+Demonstrate scale-to-zero and cold activation:
+
+```bash
+./scripts/verify.sh --scale-to-zero
+```
+
+Create V2 while leaving the main URL on V1:
+
+```bash
+./scripts/new-revision.sh
+```
+
+Apply a native Knative 50/50 split:
+
+```bash
+./scripts/split-traffic.sh 50
+```
+
+Promote V2 to 100%:
+
+```bash
+./scripts/promote-v2.sh
+```
+
+## B. KEDA companion demo
+
+Install Red Hat Custom Metrics Autoscaler if needed:
+
+```bash
+./scripts/install-keda.sh
+```
+
+Deploy the Prometheus signal source, authentication, ScaledObject, and worker:
+
+```bash
+./scripts/deploy-keda.sh
+```
+
+Run the complete KEDA scaling sequence:
+
+```bash
+./scripts/run-keda-demo.sh
+```
+
+Expected behavior:
+
+```text
+demo_async_backlog = 0
+    -> worker replicas = 0
+
+demo_async_backlog = 50
+    -> worker replicas = 5
+
+demo_async_backlog = 5
+    -> worker replicas = 1
+
+demo_async_backlog = 0
+    -> worker replicas = 0
+```
+
+The KEDA target is 10 backlog units per worker with `maxReplicaCount: 5`.
+
+You can drive individual values manually:
+
+```bash
+./scripts/set-keda-backlog.sh 20
+./scripts/set-keda-backlog.sh 40
+./scripts/set-keda-backlog.sh 0
+```
+
+# Command-by-command execution
+
+The sections below perform the same demo without helper scripts.
+
+## 1. Verify access
+
+```bash
+oc whoami
+```
+
+Check Serverless APIs:
+
+```bash
+oc get crd services.serving.knative.dev
+oc get crd knativeservings.operator.knative.dev
+```
+
+Check KEDA APIs when installed:
+
+```bash
+oc get crd scaledobjects.keda.sh
+oc get crd kedacontrollers.keda.sh
+```
+
+## 2. Install OpenShift Serverless manually
+
+```bash
+oc apply \
+  -f platform/serverless-subscription.yaml
+
+oc get subscription,csv \
+  -n openshift-serverless
+```
+
+Wait for the Operator CRD:
+
+```bash
+until oc get crd knativeservings.operator.knative.dev >/dev/null 2>&1; do
+  sleep 5
+done
+```
+
+Create Knative Serving:
+
+```bash
+oc apply \
+  -f platform/knative-serving.yaml
+
+oc wait \
+  --for=condition=Ready \
+  knativeserving/knative-serving \
+  -n knative-serving \
+  --timeout=600s
+```
+
+Inspect:
+
+```bash
+oc get knativeserving knative-serving \
+  -n knative-serving
+
+oc get pods \
+  -n knative-serving
+```
+
+## 3. Deploy V1 manually
 
 ```bash
 oc apply -k app
-oc wait --for=condition=Ready \
+```
+
+Reset traffic to latest/V1:
+
+```bash
+oc patch ksvc httpd-single-page \
+  -n knative-httpd \
+  --type=merge \
+  -p '{"spec":{"traffic":[{"latestRevision":true,"percent":100}]}}'
+```
+
+Wait:
+
+```bash
+oc wait \
+  --for=condition=Ready \
   ksvc/httpd-single-page \
   -n knative-httpd \
   --timeout=300s
+```
 
-oc get ksvc httpd-single-page -n knative-httpd
+Inspect the Serving object hierarchy:
+
+```bash
+oc get ksvc,configuration,revision,route,pod \
+  -n knative-httpd
 ```
 
 Get the URL:
@@ -89,102 +290,429 @@ echo "$URL"
 curl "$URL"
 ```
 
-If your lab uses an untrusted ingress certificate, set `CURL_INSECURE=1` when running the verification script instead of editing it to hard-code `curl -k`.
+## 4. Observe scale-to-zero manually
 
-## 3. Verify the application
-
-Basic readiness and HTTP response test:
+Generate one request:
 
 ```bash
-./scripts/verify.sh
+curl "$URL" >/dev/null
 ```
 
-The script checks the `ksvc`, lists its revisions, requests the Knative URL, and verifies that the returned page contains the expected content.
-
-## 4. Demonstrate scale-to-zero
-
-Run:
+Watch the application Pods:
 
 ```bash
-./scripts/verify.sh --scale-to-zero
+watch -n 2 \
+  'oc get pod -n knative-httpd'
 ```
 
-The test performs three stages:
+Stop generating traffic. After Knative's stable window, the Revision can reach zero running Pods.
+
+Then send a new request:
+
+```bash
+curl "$URL" >/dev/null
+```
+
+Watch a Revision Pod appear again:
+
+```bash
+oc get pod \
+  -n knative-httpd \
+  -w
+```
+
+## 5. Create V2 manually
+
+Capture V1:
+
+```bash
+CURRENT="$(oc get ksvc httpd-single-page \
+  -n knative-httpd \
+  -o jsonpath='{.status.latestReadyRevisionName}')"
+```
+
+Pin it at 100% and create a 0% candidate tag:
+
+```bash
+oc patch ksvc httpd-single-page \
+  -n knative-httpd \
+  --type=merge \
+  -p "{
+    \"spec\": {
+      \"traffic\": [
+        {
+          \"revisionName\": \"${CURRENT}\",
+          \"percent\": 100,
+          \"tag\": \"current\"
+        },
+        {
+          \"latestRevision\": true,
+          \"percent\": 0,
+          \"tag\": \"candidate\"
+        }
+      ]
+    }
+  }"
+```
+
+Create V2 by changing the Revision template to the immutable V2 ConfigMap:
+
+```bash
+TRIGGER="v2-$(date -u +%Y%m%dT%H%M%SZ)"
+
+oc patch ksvc httpd-single-page \
+  -n knative-httpd \
+  --type=merge \
+  -p "{
+    \"spec\": {
+      \"template\": {
+        \"metadata\": {
+          \"annotations\": {
+            \"demo.knative.dev/version\": \"${TRIGGER}\"
+          }
+        },
+        \"spec\": {
+          \"volumes\": [
+            {
+              \"name\": \"page\",
+              \"configMap\": {
+                \"name\": \"httpd-page-v2\",
+                \"items\": [
+                  {
+                    \"key\": \"index.html\",
+                    \"path\": \"index.html\"
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    }
+  }"
+```
+
+Wait and inspect:
+
+```bash
+oc wait \
+  --for=condition=Ready \
+  ksvc/httpd-single-page \
+  -n knative-httpd \
+  --timeout=300s
+
+oc get revision \
+  -n knative-httpd
+```
+
+Get candidate URL:
+
+```bash
+CANDIDATE_URL="$(oc get ksvc httpd-single-page \
+  -n knative-httpd \
+  -o jsonpath='{.status.traffic[?(@.tag=="candidate")].url}')"
+
+curl "$CANDIDATE_URL"
+```
+
+## 6. Split and promote Knative traffic manually
+
+Capture V2:
+
+```bash
+CANDIDATE="$(oc get ksvc httpd-single-page \
+  -n knative-httpd \
+  -o jsonpath='{.status.latestReadyRevisionName}')"
+```
+
+50/50:
+
+```bash
+oc patch ksvc httpd-single-page \
+  -n knative-httpd \
+  --type=merge \
+  -p "{
+    \"spec\": {
+      \"traffic\": [
+        {
+          \"revisionName\": \"${CURRENT}\",
+          \"percent\": 50,
+          \"tag\": \"current\"
+        },
+        {
+          \"revisionName\": \"${CANDIDATE}\",
+          \"percent\": 50,
+          \"tag\": \"candidate\"
+        }
+      ]
+    }
+  }"
+```
+
+Inspect:
+
+```bash
+oc get ksvc httpd-single-page \
+  -n knative-httpd \
+  -o jsonpath='{range .status.traffic[*]}{.percent}{"% -> "}{.revisionName}{" tag="}{.tag}{"\n"}{end}'
+```
+
+Promote V2:
+
+```bash
+oc patch ksvc httpd-single-page \
+  -n knative-httpd \
+  --type=merge \
+  -p "{
+    \"spec\": {
+      \"traffic\": [
+        {
+          \"revisionName\": \"${CANDIDATE}\",
+          \"percent\": 100
+        }
+      ]
+    }
+  }"
+```
+
+## 7. Install Red Hat Custom Metrics Autoscaler manually
+
+Install the Operator:
+
+```bash
+oc apply \
+  -f keda/platform/custom-metrics-autoscaler.yaml
+```
+
+Wait for KEDA CRDs:
+
+```bash
+until oc get crd scaledobjects.keda.sh >/dev/null 2>&1; do
+  sleep 5
+done
+```
+
+OpenShift 4.22 normally creates the `KedaController` automatically. Verify:
+
+```bash
+oc get kedacontroller \
+  -n openshift-keda
+```
+
+If no `keda` controller exists:
+
+```bash
+oc apply \
+  -f keda/platform/keda-controller.yaml
+```
+
+Verify KEDA components:
+
+```bash
+oc get deployment,pod \
+  -n openshift-keda
+```
+
+You should see the operator plus:
 
 ```text
-HTTP request
-    │
-    ▼
-HTTPD revision pod running
-    │
-    │ no traffic
-    ▼
-Knative Pod Autoscaler
-    │
-    ▼
-0 revision pods
-    │
-    │ new HTTP request
-    ▼
-Knative activation path
-    │
-    ▼
-HTTPD revision pod running again
+keda-operator
+keda-metrics-apiserver
+keda-admission
 ```
 
-The default wait for scale-to-zero is 180 seconds. Override it when necessary:
+## 8. Enable user-workload monitoring
+
+Inspect the existing configuration first:
 
 ```bash
-ZERO_TIMEOUT=300 ./scripts/verify.sh --scale-to-zero
+oc get configmap cluster-monitoring-config \
+  -n openshift-monitoring \
+  -o yaml
 ```
 
-Useful commands while watching the transition:
+If no custom configuration exists, apply the repository setting:
 
 ```bash
-watch oc get pods -n knative-httpd
+oc apply \
+  -f ../platform-monitoring/user-workload-monitoring.yaml
 ```
 
-In another terminal:
-
-```bash
-oc get ksvc,configuration,revision,route -n knative-httpd
-```
-
-## Autoscaling settings
-
-`app/service.yaml` uses these revision annotations:
+If `cluster-monitoring-config` already contains unrelated settings, merge:
 
 ```yaml
-autoscaling.knative.dev/min-scale: "0"
-autoscaling.knative.dev/max-scale: "5"
-autoscaling.knative.dev/metric: concurrency
-autoscaling.knative.dev/target: "20"
+enableUserWorkload: true
 ```
 
-`containerConcurrency: 50` places a hard concurrency limit on each revision pod, while the autoscaler target asks Knative to scale around 20 concurrent requests per pod.
+into its existing `data.config.yaml` rather than replacing the ConfigMap.
 
-## Update the page
-
-Edit `app/configmap.yaml` and re-run:
+Wait:
 
 ```bash
-./scripts/deploy.sh
+oc rollout status \
+  statefulset/prometheus-user-workload \
+  -n openshift-user-workload-monitoring \
+  --timeout=300s
 ```
 
-The page is mounted from the ConfigMap at `/var/www/html/index.html`. Because the file is mounted with `subPath`, an already-running pod does not live-update the mounted file. For a deterministic content rollout, delete the current revision pod after updating the ConfigMap or change the Knative Service template to create a new revision. A pod created after scale-to-zero will consume the current ConfigMap content.
+## 9. Deploy KEDA demo resources manually
 
-## Cleanup
+```bash
+oc apply -k keda/app
+```
 
-Remove only the demo application:
+Wait:
+
+```bash
+oc rollout status \
+  deployment/keda-demo-pushgateway \
+  -n knative-httpd \
+  --timeout=300s
+
+oc wait \
+  --for=condition=Ready \
+  scaledobject/keda-async-worker \
+  -n knative-httpd \
+  --timeout=300s
+```
+
+Inspect:
+
+```bash
+oc get scaledobject,hpa,deployment,pod \
+  -n knative-httpd
+```
+
+The worker should start at zero replicas.
+
+## 10. Publish backlog values manually
+
+Publish a backlog of 50:
+
+```bash
+oc run keda-backlog-publisher \
+  -n knative-httpd \
+  --rm -i \
+  --restart=Never \
+  --image=curlimages/curl:8.12.1 \
+  -- \
+  sh -c \
+  "printf 'demo_async_backlog 50\n' | curl --fail --silent --show-error --data-binary @- http://keda-demo-pushgateway:9091/metrics/job/knative-keda-demo"
+```
+
+Watch KEDA/HPA:
+
+```bash
+watch -n 2 '
+oc get scaledobject,hpa,deployment,pod \
+  -n knative-httpd
+'
+```
+
+With a target of 10 and max 5, the demo should converge toward five worker replicas.
+
+Publish 5:
+
+```bash
+oc run keda-backlog-publisher \
+  -n knative-httpd \
+  --rm -i \
+  --restart=Never \
+  --image=curlimages/curl:8.12.1 \
+  -- \
+  sh -c \
+  "printf 'demo_async_backlog 5\n' | curl --fail --silent --show-error --data-binary @- http://keda-demo-pushgateway:9091/metrics/job/knative-keda-demo"
+```
+
+The worker should converge toward one replica.
+
+Publish zero:
+
+```bash
+oc run keda-backlog-publisher \
+  -n knative-httpd \
+  --rm -i \
+  --restart=Never \
+  --image=curlimages/curl:8.12.1 \
+  -- \
+  sh -c \
+  "printf 'demo_async_backlog 0\n' | curl --fail --silent --show-error --data-binary @- http://keda-demo-pushgateway:9091/metrics/job/knative-keda-demo"
+```
+
+After the KEDA cooldown, the worker scales to zero.
+
+## 11. Understand the KEDA data path
+
+The KEDA demo path is:
+
+```text
+set-keda-backlog.sh
+        |
+        | pushes demo_async_backlog
+        v
+Prometheus Pushgateway
+        |
+        | ServiceMonitor every 5s
+        v
+OpenShift user-workload Prometheus
+        |
+        v
+Thanos Querier :9092
+        |
+        | PromQL from ScaledObject
+        v
+KEDA operator
+        |
+        v
+generated HPA
+        |
+        v
+keda-async-worker Deployment
+```
+
+The `ScaledObject` query is:
+
+```promql
+max(demo_async_backlog{demo="knative-keda"}) or on() vector(0)
+```
+
+and uses:
+
+```yaml
+threshold: "10"
+activationThreshold: "0"
+minReplicaCount: 0
+maxReplicaCount: 5
+```
+
+KEDA handles activation/deactivation between zero and one replica. Above one replica, the generated HPA performs normal 1-to-N scaling from the KEDA external metric.
+
+## 12. Cleanup
+
+Application-only Knative cleanup:
 
 ```bash
 ./scripts/cleanup.sh
 ```
 
-Remove the demo and the Serverless platform resources installed by this directory:
+KEDA companion resources only:
+
+```bash
+./scripts/cleanup-keda.sh
+```
+
+Remove KEDA platform as well:
+
+```bash
+./scripts/cleanup-keda.sh --platform
+```
+
+Do not use `--platform` on a cluster with other KEDA workloads.
+
+Remove Serverless platform too:
 
 ```bash
 ./scripts/cleanup.sh --platform
 ```
 
-Do not use `--platform` on a cluster where other applications depend on Knative Serving.
+Do not remove shared platform Operators from a cluster used by other workloads.

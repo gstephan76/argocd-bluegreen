@@ -1,0 +1,32 @@
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: keda-async-worker
+  namespace: knative-httpd
+spec:
+  scaleTargetRef:
+    name: keda-async-worker
+  pollingInterval: 5
+  cooldownPeriod: 15
+  minReplicaCount: 0
+  maxReplicaCount: 5
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleDown:
+          stabilizationWindowSeconds: 0
+        scaleUp:
+          stabilizationWindowSeconds: 0
+  triggers:
+    - type: prometheus
+      metadata:
+        serverAddress: https://thanos-querier.openshift-monitoring.svc.cluster.local:9092
+        namespace: knative-httpd
+        query: max(demo_async_backlog{demo="knative-keda"}) or on() vector(0)
+        threshold: "10"
+        activationThreshold: "0"
+        authModes: bearer
+        ignoreNullValues: "false"
+      authenticationRef:
+        name: keda-thanos
+        kind: TriggerAuthentication

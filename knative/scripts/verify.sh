@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -Eeuo pipefail
 
 APP_NAMESPACE="${APP_NAMESPACE:-knative-httpd}"
 SERVICE_NAME="${SERVICE_NAME:-httpd-single-page}"
@@ -8,83 +8,75 @@ WAKE_TIMEOUT="${WAKE_TIMEOUT:-120}"
 CURL_INSECURE="${CURL_INSECURE:-0}"
 MODE="${1:-}"
 
-command -v oc >/dev/null 2>&1 || { echo "ERROR: oc is required." >&2; exit 1; }
-command -v curl >/dev/null 2>&1 || { echo "ERROR: curl is required." >&2; exit 1; }
-oc whoami >/dev/null
+die(){ echo "ERROR: $*" >&2; exit 1; }
+for c in oc curl; do command -v "$c" >/dev/null 2>&1 || die "$c is required"; done
+oc whoami >/dev/null 2>&1 || die "Not logged in to OpenShift"
+
+case "${MODE}" in
+  ""|--scale-to-zero) ;;
+  *) die "Usage: $0 [--scale-to-zero]" ;;
+esac
 
 curl_args=(--fail --silent --show-error --location)
-if [[ "${CURL_INSECURE}" == "1" ]]; then
-  curl_args+=(--insecure)
-fi
+[[ "${CURL_INSECURE}" != "1" ]] || curl_args+=(--insecure)
 
 URL="$(oc get ksvc "${SERVICE_NAME}" -n "${APP_NAMESPACE}" -o jsonpath='{.status.url}')"
 READY="$(oc get ksvc "${SERVICE_NAME}" -n "${APP_NAMESPACE}" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}')"
+REVISION="$(oc get ksvc "${SERVICE_NAME}" -n "${APP_NAMESPACE}" -o jsonpath='{.status.latestReadyRevisionName}')"
+[[ "${READY}" == "True" ]] || die "${SERVICE_NAME} is not Ready"
 
-if [[ "${READY}" != "True" ]]; then
-  echo "ERROR: ${SERVICE_NAME} is not Ready (Ready=${READY:-unknown})." >&2
-  exit 1
-fi
-
-echo "==> Knative Service"
-oc get ksvc "${SERVICE_NAME}" -n "${APP_NAMESPACE}"
+echo "==> Knative Serving objects"
+oc get ksvc,configuration,revision,route -n "${APP_NAMESPACE}"
 
 echo
-echo "==> Revisions"
-oc get revision -n "${APP_NAMESPACE}" -l "serving.knative.dev/service=${SERVICE_NAME}"
+echo "==> Traffic targets"
+oc get ksvc "${SERVICE_NAME}" -n "${APP_NAMESPACE}" \
+  -o jsonpath='{range .status.traffic[*]}{.percent}{"% -> "}{.revisionName}{" tag="}{.tag}{" url="}{.url}{"\n"}{end}'
 
 echo
 echo "==> HTTP check: ${URL}"
 body="$(curl "${curl_args[@]}" "${URL}")"
-if command -v rg >/dev/null 2>&1; then
-  printf '%s' "${body}" | rg -q 'Knative HTTPD Demo'
-else
-  printf '%s' "${body}" | grep -q 'Knative HTTPD Demo'
-fi
-echo "HTTP response contains the expected Knative HTTPD page."
+printf '%s' "${body}" | grep -q 'Knative HTTPD Demo'
+printf '%s' "${body}" | grep -Eq 'Revision V[12]'
+echo "HTTP response contains the expected Knative revision page."
 
-if [[ "${MODE}" != "--scale-to-zero" ]]; then
-  exit 0
-fi
+[[ "${MODE}" == "--scale-to-zero" ]] || exit 0
 
-running_pods() {
-  oc get pods -n "${APP_NAMESPACE}" \
-    -l "serving.knative.dev/service=${SERVICE_NAME}" \
+running_revision_pods() {
+  oc get pods \
+    -n "${APP_NAMESPACE}" \
+    -l "serving.knative.dev/revision=${REVISION}" \
     --field-selector=status.phase=Running \
     --no-headers 2>/dev/null | wc -l | tr -d ' '
 }
 
 echo
-echo "==> Waiting for the revision to scale to zero (timeout: ${ZERO_TIMEOUT}s)"
-end=$((SECONDS + ZERO_TIMEOUT))
-while (( SECONDS < end )); do
-  count="$(running_pods)"
+echo "==> Waiting for ${REVISION} to scale to zero"
+echo "Do not refresh the Service URL while waiting."
+deadline=$((SECONDS + ZERO_TIMEOUT))
+while (( SECONDS < deadline )); do
+  count="$(running_revision_pods)"
   if [[ "${count}" == "0" ]]; then
-    echo "Scale-to-zero confirmed: no running revision pods."
+    echo "Scale-to-zero confirmed."
     break
   fi
-  printf '  running revision pods: %s\n' "${count}"
+  printf '    running pods: %s\n' "${count}"
   sleep 5
 done
-
-if [[ "$(running_pods)" != "0" ]]; then
-  echo "ERROR: revision did not scale to zero within ${ZERO_TIMEOUT}s." >&2
-  oc get pods -n "${APP_NAMESPACE}" -l "serving.knative.dev/service=${SERVICE_NAME}" || true
-  exit 1
-fi
+[[ "$(running_revision_pods)" == "0" ]] || die "Revision did not scale to zero"
 
 echo
-echo "==> Sending a request to reactivate the service"
+echo "==> Sending cold activation request"
 curl "${curl_args[@]}" "${URL}" >/dev/null
 
-end=$((SECONDS + WAKE_TIMEOUT))
-while (( SECONDS < end )); do
-  count="$(running_pods)"
+deadline=$((SECONDS + WAKE_TIMEOUT))
+while (( SECONDS < deadline )); do
+  count="$(running_revision_pods)"
   if (( count > 0 )); then
-    echo "Cold activation confirmed: revision pod count is ${count}."
+    echo "Cold activation confirmed: ${count} running pod(s)."
     exit 0
   fi
   sleep 2
 done
 
-echo "ERROR: no running revision pod appeared within ${WAKE_TIMEOUT}s." >&2
-exit 1
+die "No revision pod appeared after the activation request"
