@@ -15,6 +15,9 @@ ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 [[ -n "$ROOT" ]] || die "Run inside the repository"
 cd "$ROOT"
 
+echo "==> Running Metric-AI pre-flight and safe remediation"
+bash scripts/preflight-metric-ai-demo.sh --remediate
+
 oc whoami >/dev/null 2>&1 || die "Not logged in to OpenShift"
 
 if ! git diff --quiet || ! git diff --cached --quiet; then
