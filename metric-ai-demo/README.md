@@ -26,9 +26,9 @@ stable + canary logs / Kubernetes evidence
             Argo Rollouts
 ```
 
-The base demo intentionally stops at AI-assisted rollout analysis and
-promotion/rollback. GitHub source-code remediation is optional and disabled in
-the base manifests.
+The canonical baseline uses AI-assisted rollout analysis and promotion/rollback.
+GitHub source-code remediation is optional and is activated only by the
+`autofix` scenario; no real GitHub credential is stored in Git.
 
 ## Sources and scenarios
 
@@ -52,7 +52,7 @@ evidence before the AnalysisRun without a separate load generator.
 - Red Hat OpenShift Container Platform 4.19+
 - Red Hat OpenShift GitOps with `RolloutManager`
 - `oc argo rollouts` CLI plugin
-- amd64 nodes for the published metric-provider binary
+- Argo Rollouts controller pods scheduled on amd64 nodes for the published metric-provider binary
 - an OpenAI-compatible model endpoint reachable by the Kubernetes AI agent
 
 The metric-provider installer supports the published releases used by this
@@ -63,9 +63,14 @@ v0.0.1 -> built against Argo Rollouts v1.8.0
 v1.9.0 -> built against Argo Rollouts v1.9.0
 ```
 
-The installer keeps version selection dynamic because the RolloutManager is a
-shared platform resource and controller/plugin compatibility matters. Override
-the compatibility hint when required:
+The installer derives compatibility from the **live Rollouts controller**
+deployment, not from the workstation CLI. It also validates the architecture
+of the nodes actually running controller pods, so heterogeneous clusters are
+supported as long as every controller pod runs on amd64.
+
+If the controller version cannot be proven from its
+`app.kubernetes.io/version` label or image tag, the installer fails closed.
+In that case select the plugin release explicitly:
 
 ```bash
 METRIC_AI_PLUGIN_VERSION=v0.0.1 \
@@ -136,7 +141,8 @@ Before the audience arrives:
 ./scripts/run-metric-ai-demo.sh prepare
 ```
 
-`prepare` delegates to the same robust pre-flight used by the scenario scripts:
+`prepare` always delegates to the robust pre-flight. Individual scenario
+commands use lightweight state guards by default and may opt into the same pass:
 
 ```bash
 bash scripts/preflight-metric-ai-demo.sh --remediate
@@ -255,6 +261,7 @@ scripts/promote-metric-ai-stable.sh
 scripts/start-metric-ai-failure.sh
 scripts/show-metric-ai-analysis.sh
 scripts/reset-metric-ai-demo.sh
+scripts/clean-metric-ai-history.sh
 scripts/cleanup-metric-ai-demo.sh
 ```
 
@@ -322,15 +329,33 @@ Secret is checked in because it is not a credential.
 
 ## Optional GitHub remediation
 
-The upstream agent can also create an issue or PR after a failed rollout. This
-is disabled in the base demo.
+The `autofix` scenario uses the declarative
+`metric-ai-analysis-autofix` template and targets:
 
-Do not replace `metric-ai-github-bootstrap` in Git with a real token. To
-demonstrate source remediation, use a writable fork of
-`kdubois/argo-rollouts-quarkus-demo`, enable `githubUrl`/`baseBranch` in the
-AnalysisTemplate, and supply the real GitHub token from an external Secret
-manager or a private, untracked overlay that replaces the `GITHUB_TOKEN`
-secretKeyRef.
+```text
+gstephan76/argo-rollouts-quarkus-demo
+```
+
+Supply the fine-grained PAT only through the environment:
+
+```bash
+export GITHUB_TOKEN='...'
+./scripts/run-metric-ai-demo.sh autofix
+```
+
+For a full robust validation before the scenario:
+
+```bash
+./scripts/run-metric-ai-demo.sh autofix --preflight
+```
+
+The launcher copies the token into the runtime Secret only for the autofix
+operation, restarts the AI agent so it can consume it, and restores the
+previous Secret state on success, timeout, or error. Review and merge of the
+generated pull request remain manual.
+
+Do not replace `metric-ai-github-bootstrap` in Git with a real token. The
+checked-in value remains deliberately inert.
 
 The base repository intentionally contains no real GitHub credential.
 
@@ -377,7 +402,7 @@ Current Rollout:
 ./scripts/run-metric-ai-demo.sh status
 ```
 
-Latest AI decision:
+AI decision bound to the current Rollout revision/candidate:
 
 ```bash
 ./scripts/run-metric-ai-demo.sh analysis

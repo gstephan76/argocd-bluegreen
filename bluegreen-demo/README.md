@@ -334,62 +334,84 @@ oc get svc \
 
 ### 5. Establish BLUE as the baseline if necessary
 
-Inspect the image in Git:
+The trusted scripted recovery is preferred:
 
 ```bash
-rg 'image:.*argoproj/rollouts-demo:' \
-  bluegreen-demo/rollout.yaml
+bash scripts/prepare-blue.sh
 ```
 
-If Git currently requests GREEN, change it to BLUE:
+For an educational manual equivalent, restore **all three pieces** of canonical
+desired state: image, revision marker, and both analysis identities:
 
 ```bash
-sed -i \
-  's#argoproj/rollouts-demo:green#argoproj/rollouts-demo:blue#' \
+sed -i -E \
+  -e 's#image: argoproj/rollouts-demo:(blue|green)#image: argoproj/rollouts-demo:blue#' \
+  -e 's#demo-rollout-revision: ".*"#demo-rollout-revision: "baseline-blue"#' \
+  bluegreen-demo/rollout.yaml
+
+sed -i -E \
+  '/- name: expected-color/{n;s#value: (blue|green)#value: blue#;}' \
   bluegreen-demo/rollout.yaml
 
 git add bluegreen-demo/rollout.yaml
 git diff --cached --check
-git commit -m "Restore blue baseline"
+git commit -m "Restore canonical blue baseline"
 git push origin main
 ```
 
-Force an Argo CD refresh:
+After Argo CD has synced that exact revision, verify the live Rollout itself
+declares the canonical BLUE image and marker before using trusted full
+promotion:
 
 ```bash
+REV="$(git rev-parse HEAD)"
+
 oc annotate applications.argoproj.io bluegreen-demo \
   -n openshift-gitops \
   argocd.argoproj.io/refresh=hard \
   --overwrite
-```
 
-Watch the Rollout:
+oc get applications.argoproj.io bluegreen-demo \
+  -n openshift-gitops \
+  -o jsonpath='sync={.status.sync.status} revision={.status.sync.revision}{"\n"}'
 
-```bash
-oc argo rollouts get rollout bluegreen-demo \
+oc get rollout bluegreen-demo \
   -n bluegreen-demo \
-  --watch
+  -o jsonpath='image={.spec.template.spec.containers[0].image} marker={.spec.template.metadata.annotations.demo-rollout-revision}{"\n"}'
 ```
 
-When the BLUE pre-promotion AnalysisRun is successful and the rollout is paused, promote BLUE:
+Only when Argo CD reports `Synced` at `$REV` and the live output is
+`:blue` / `baseline-blue`, trusted recovery may bypass analysis:
 
 ```bash
-oc argo rollouts promote bluegreen-demo \
-  -n bluegreen-demo
+oc argo rollouts promote bluegreen-demo -n bluegreen-demo --full
 ```
 
-Wait for the post-promotion analysis to succeed and for BLUE to become `Healthy`/stable before continuing.
+Wait for BLUE to become `Healthy` with active, preview, current, and stable
+hashes converged before continuing.
 
 ### 6. Commit GREEN desired state
 
+Create a fresh marker and change the image **and both expected-color args**:
+
 ```bash
-sed -i \
+TRIGGER="bluegreen-green-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+
+sed -i -E \
   's#argoproj/rollouts-demo:blue#argoproj/rollouts-demo:green#' \
+  bluegreen-demo/rollout.yaml
+
+sed -i -E \
+  "s#demo-rollout-revision: \".*\"#demo-rollout-revision: \"${TRIGGER}\"#" \
+  bluegreen-demo/rollout.yaml
+
+sed -i -E \
+  '/- name: expected-color/{n;s#value: blue#value: green#;}' \
   bluegreen-demo/rollout.yaml
 
 git add bluegreen-demo/rollout.yaml
 git diff --cached --check
-git commit -m "Deploy green preview"
+git commit -m "Deploy fresh green preview"
 git push origin main
 ```
 

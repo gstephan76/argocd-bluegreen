@@ -3,12 +3,13 @@ set -Eeuo pipefail
 
 ROLLOUTS_NAMESPACE="${ROLLOUTS_NAMESPACE:-openshift-gitops}"
 ROLLOUT_MANAGER="${ROLLOUT_MANAGER:-argo-rollout}"
+ROLLOUTS_DEPLOYMENT="${ROLLOUTS_DEPLOYMENT:-}"
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-300}"
 POLL_SECONDS="${POLL_SECONDS:-5}"
 METRIC_AI_PLUGIN_VERSION="${METRIC_AI_PLUGIN_VERSION:-}"
 
 die(){ echo "ERROR: $*" >&2; exit 1; }
-for c in oc rg sed sort; do command -v "$c" >/dev/null 2>&1 || die "$c not found"; done
+for c in oc rg sed sort awk; do command -v "$c" >/dev/null 2>&1 || die "$c not found"; done
 oc whoami >/dev/null 2>&1 || die "Not logged in to OpenShift"
 oc argo rollouts version >/dev/null 2>&1 || die "Argo Rollouts CLI plugin is required"
 
@@ -16,28 +17,111 @@ oc get rolloutmanager "$ROLLOUT_MANAGER" \
   -n "$ROLLOUTS_NAMESPACE" >/dev/null 2>&1 || \
   die "RolloutManager ${ROLLOUTS_NAMESPACE}/${ROLLOUT_MANAGER} not found"
 
-architectures="$(
-  oc get nodes \
-    -o jsonpath='{range .items[*]}{.status.nodeInfo.architecture}{"\n"}{end}' |
+if [[ -z "$ROLLOUTS_DEPLOYMENT" ]]; then
+  if oc get deployment argo-rollouts \
+    -n "$ROLLOUTS_NAMESPACE" >/dev/null 2>&1; then
+    ROLLOUTS_DEPLOYMENT="argo-rollouts"
+  else
+    ROLLOUTS_DEPLOYMENT="$(
+      oc get deployment \
+        -n "$ROLLOUTS_NAMESPACE" \
+        -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' |
+      rg 'argo-rollouts' |
+      sed -n '1p'
+    )"
+  fi
+fi
+[[ -n "$ROLLOUTS_DEPLOYMENT" ]] || die "Could not discover the Argo Rollouts controller Deployment"
+
+controller_rs="$(
+  oc get rs \
+    -n "$ROLLOUTS_NAMESPACE" \
+    -o jsonpath='{range .items[*]}{.metadata.name}{"|"}{.metadata.ownerReferences[0].kind}{"|"}{.metadata.ownerReferences[0].name}{"\n"}{end}' |
+  awk -F'|' -v deployment="$ROLLOUTS_DEPLOYMENT" \
+    '$2 == "Deployment" && $3 == deployment { print $1 }'
+)"
+[[ -n "$controller_rs" ]] || die "Could not discover ReplicaSets owned by ${ROLLOUTS_DEPLOYMENT}"
+
+controller_nodes="$(
+  while IFS= read -r rs; do
+    [[ -n "$rs" ]] || continue
+    oc get pods \
+      -n "$ROLLOUTS_NAMESPACE" \
+      -o jsonpath='{range .items[*]}{.metadata.ownerReferences[0].kind}{"|"}{.metadata.ownerReferences[0].name}{"|"}{.spec.nodeName}{"|"}{.status.phase}{"\n"}{end}' |
+    awk -F'|' -v rs="$rs" \
+      '$1 == "ReplicaSet" && $2 == rs && $3 != "" && $4 == "Running" { print $3 }'
+  done <<< "$controller_rs" |
+  sort -u
+)"
+[[ -n "$controller_nodes" ]] || die "Could not determine nodes running the Argo Rollouts controller"
+
+controller_architectures="$(
+  while IFS= read -r node; do
+    [[ -n "$node" ]] || continue
+    oc get node "$node" -o jsonpath='{.status.nodeInfo.architecture}{"\n"}'
+  done <<< "$controller_nodes" |
   sort -u
 )"
 
-if [[ "$architectures" != "amd64" ]]; then
-  printf 'Detected node architecture(s):\n%s\n' "$architectures" >&2
-  die "The published metric-ai release artifact used by this demo is linux-amd64"
+if [[ "$controller_architectures" != "amd64" ]]; then
+  printf 'Argo Rollouts controller architecture(s):\n%s\n' "$controller_architectures" >&2
+  die "metric-ai is linux-amd64; every running Rollouts-controller pod must be on amd64"
+fi
+
+echo "==> Rollouts controller runtime architecture: ${controller_architectures}"
+
+controller_version_label="$(
+  oc get deployment "$ROLLOUTS_DEPLOYMENT" \
+    -n "$ROLLOUTS_NAMESPACE" \
+    -o jsonpath='{.metadata.labels.app\.kubernetes\.io/version}' \
+    2>/dev/null || true
+)"
+controller_image="$(
+  oc get deployment "$ROLLOUTS_DEPLOYMENT" \
+    -n "$ROLLOUTS_NAMESPACE" \
+    -o jsonpath='{.spec.template.spec.containers[0].image}' \
+    2>/dev/null || true
+)"
+
+label_semver=""
+image_semver=""
+if [[ "$controller_version_label" =~ ^v?(1\.(8|9)\.[0-9]+)([-+].*)?$ ]]; then
+  label_semver="${BASH_REMATCH[1]}"
+fi
+if [[ "$controller_image" =~ :v?(1\.(8|9)\.[0-9]+)([-+][^@]*)?(@.*)?$ ]]; then
+  image_semver="${BASH_REMATCH[1]}"
+fi
+
+if [[ -n "$label_semver" && -n "$image_semver" && "$label_semver" != "$image_semver" ]]; then
+  die "Controller version label (${label_semver}) disagrees with image tag (${image_semver})"
+fi
+
+controller_semver="${label_semver:-$image_semver}"
+recommended_plugin=""
+if [[ -n "$controller_semver" ]]; then
+  controller_major="${controller_semver%%.*}"
+  controller_minor_rest="${controller_semver#*.}"
+  controller_minor="${controller_minor_rest%%.*}"
+
+  if [[ "$controller_major" == "1" && "$controller_minor" == "8" ]]; then
+    recommended_plugin="v0.0.1"
+  elif [[ "$controller_major" == "1" && "$controller_minor" == "9" ]]; then
+    recommended_plugin="v1.9.0"
+  else
+    die "Unsupported detected Argo Rollouts controller version ${controller_semver}"
+  fi
 fi
 
 if [[ -z "$METRIC_AI_PLUGIN_VERSION" ]]; then
-  cli_version="$(oc argo rollouts version --short 2>/dev/null || true)"
-  if printf '%s\n' "$cli_version" | rg -q '^v?1\.8\.'; then
-    METRIC_AI_PLUGIN_VERSION="v0.0.1"
-  elif printf '%s\n' "$cli_version" | rg -q '^v?1\.(9|[1-9][0-9])\.'; then
-    METRIC_AI_PLUGIN_VERSION="v1.9.0"
-  else
-    echo "WARNING: Could not map the local Argo Rollouts CLI version to an upstream metric-ai release." >&2
-    echo "         Defaulting to v1.9.0. Set METRIC_AI_PLUGIN_VERSION explicitly if your controller is 1.8.x." >&2
-    METRIC_AI_PLUGIN_VERSION="v1.9.0"
-  fi
+  [[ -n "$recommended_plugin" ]] || {
+    echo "Controller image: ${controller_image:-unknown}" >&2
+    echo "Controller app.kubernetes.io/version: ${controller_version_label:-unknown}" >&2
+    die "Could not determine controller semver safely; set METRIC_AI_PLUGIN_VERSION explicitly"
+  }
+  METRIC_AI_PLUGIN_VERSION="$recommended_plugin"
+elif [[ -n "$recommended_plugin" && "$METRIC_AI_PLUGIN_VERSION" != "$recommended_plugin" ]]; then
+  echo "WARNING: explicit METRIC_AI_PLUGIN_VERSION=${METRIC_AI_PLUGIN_VERSION}" >&2
+  echo "         differs from detected controller recommendation ${recommended_plugin}" >&2
 fi
 
 case "$METRIC_AI_PLUGIN_VERSION" in
@@ -110,16 +194,7 @@ while (( SECONDS < deadline )); do
 done
 (( SECONDS < deadline )) || die "Timed out waiting for RolloutManager"
 
-rollouts_deployment="$(
-  oc get deployment \
-    -n "$ROLLOUTS_NAMESPACE" \
-    -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' |
-  rg '^argo-rollouts$' |
-  sed -n '1p'
-)"
-[[ -n "$rollouts_deployment" ]] || die "Could not find deployment/argo-rollouts"
-
-oc rollout status deployment/"$rollouts_deployment" \
+oc rollout status deployment/"$ROLLOUTS_DEPLOYMENT" \
   -n "$ROLLOUTS_NAMESPACE" \
   --timeout="${TIMEOUT_SECONDS}s"
 
@@ -139,7 +214,9 @@ done
 echo
 echo "metric-ai plugin is configured."
 echo "Selected upstream release: ${METRIC_AI_PLUGIN_VERSION}"
+echo "Rollouts controller image: ${controller_image:-unknown}"
+[[ -n "$controller_semver" ]] && echo "Detected controller version: ${controller_semver}"
 echo
-echo "NOTE: the local CLI version is only a compatibility hint."
-echo "If your Red Hat Rollouts controller is 1.8.x, use METRIC_AI_PLUGIN_VERSION=v0.0.1."
-echo "For controller 1.9.x, use METRIC_AI_PLUGIN_VERSION=v1.9.0."
+echo "Compatibility is selected from the live controller, never from the local CLI."
+echo "If the controller version cannot be proven from its label/image tag,"
+echo "set METRIC_AI_PLUGIN_VERSION explicitly."

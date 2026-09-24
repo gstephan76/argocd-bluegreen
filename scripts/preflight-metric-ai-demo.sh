@@ -340,17 +340,6 @@ oc argo rollouts version >/dev/null 2>&1 || \
   die "The 'oc argo rollouts' CLI plugin is required"
 pass "Argo Rollouts CLI plugin is available"
 
-architectures="$(
-  oc get nodes \
-    -o jsonpath='{range .items[*]}{.status.nodeInfo.architecture}{"\n"}{end}' |
-  sort -u
-)"
-[[ "$architectures" == "amd64" ]] || {
-  printf 'Detected node architecture(s):\n%s\n' "$architectures" >&2
-  die "The published metric-ai binary used by this demo is linux-amd64"
-}
-pass "Cluster node architecture is amd64"
-
 oc get rolloutmanager "$ROLLOUT_MANAGER" \
   -n "$ARGOCD_NAMESPACE" >/dev/null 2>&1 || \
   die "RolloutManager ${ARGOCD_NAMESPACE}/${ROLLOUT_MANAGER} does not exist"
@@ -439,6 +428,43 @@ oc rollout status deployment/"$ROLLOUTS_DEPLOYMENT" \
   -n "$ARGOCD_NAMESPACE" \
   --timeout="${TIMEOUT_SECONDS}s" >/dev/null
 pass "Argo Rollouts controller Deployment is ready: $ROLLOUTS_DEPLOYMENT"
+
+controller_rs="$(
+  oc get rs \
+    -n "$ARGOCD_NAMESPACE" \
+    -o jsonpath='{range .items[*]}{.metadata.name}{"|"}{.metadata.ownerReferences[0].kind}{"|"}{.metadata.ownerReferences[0].name}{"\n"}{end}' |
+  awk -F'|' -v deployment="$ROLLOUTS_DEPLOYMENT" \
+    '$2 == "Deployment" && $3 == deployment { print $1 }'
+)"
+[[ -n "$controller_rs" ]] || \
+  die "Could not discover ReplicaSets owned by ${ROLLOUTS_DEPLOYMENT}"
+
+controller_nodes="$(
+  while IFS= read -r rs; do
+    [[ -n "$rs" ]] || continue
+    oc get pods \
+      -n "$ARGOCD_NAMESPACE" \
+      -o jsonpath='{range .items[*]}{.metadata.ownerReferences[0].kind}{"|"}{.metadata.ownerReferences[0].name}{"|"}{.spec.nodeName}{"|"}{.status.phase}{"\n"}{end}' |
+    awk -F'|' -v rs="$rs" \
+      '$1 == "ReplicaSet" && $2 == rs && $3 != "" && $4 == "Running" { print $3 }'
+  done <<< "$controller_rs" |
+  sort -u
+)"
+[[ -n "$controller_nodes" ]] || \
+  die "Could not determine nodes running the Argo Rollouts controller"
+
+controller_architectures="$(
+  while IFS= read -r node; do
+    [[ -n "$node" ]] || continue
+    oc get node "$node" -o jsonpath='{.status.nodeInfo.architecture}{"\n"}'
+  done <<< "$controller_nodes" |
+  sort -u
+)"
+[[ "$controller_architectures" == "amd64" ]] || {
+  printf 'Argo Rollouts controller architecture(s):\n%s\n' "$controller_architectures" >&2
+  die "metric-ai is linux-amd64; every running Rollouts-controller pod must be on amd64"
+}
+pass "Running Argo Rollouts controller pod architecture is amd64"
 
 ROLLOUTS_SA="$(
   oc get deployment "$ROLLOUTS_DEPLOYMENT" \
