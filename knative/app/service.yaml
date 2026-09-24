@@ -10,7 +10,7 @@ spec:
   template:
     metadata:
       annotations:
-        demo.knative.dev/version: v2-20260924T223750Z-3826379
+        demo.knative.dev/version: baseline-v1
         autoscaling.knative.dev/min-scale: "0"
         autoscaling.knative.dev/max-scale: "5"
         autoscaling.knative.dev/metric: concurrency
@@ -38,10 +38,10 @@ spec:
       volumes:
         - name: page
           configMap:
-            name: httpd-page-v2
+            name: httpd-page-v1
             items:
               - key: index.html
                 path: index.html
   traffic:
-    - revisionName: httpd-single-page-00002
+    - latestRevision: true
       percent: 100
