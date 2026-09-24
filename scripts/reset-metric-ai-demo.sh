@@ -61,7 +61,7 @@ oc annotate applications.argoproj.io "$APP_NAME" \
   --overwrite >/dev/null
 
 echo "==> Waiting for canonical stable baseline"
-promotion_requested=0
+full_promotion_requested=0
 deadline=$((SECONDS + TIMEOUT_SECONDS))
 while (( SECONDS < deadline )); do
   sync="$(oc get applications.argoproj.io "$APP_NAME" -n "$ARGOCD_NAMESPACE" -o jsonpath='{.status.sync.status}' 2>/dev/null || true)"
@@ -82,26 +82,29 @@ while (( SECONDS < deadline )); do
       break
     fi
 
-    if [[ "$phase" == "Paused" ]]; then
-      if [[ "$step" == "4" &&
-            "$live_image" == "$BASELINE_IMAGE" &&
-            "$live_marker" == "$BASELINE_MARKER" &&
-            -n "$current" &&
-            "$stable" != "$current" ]]; then
-        if (( promotion_requested == 0 )); then
-          echo "==> Promoting canonical baseline at final pause"
-          oc argo rollouts promote "$APP_NAME" -n "$NAMESPACE" >/dev/null
-          promotion_requested=1
-        fi
-      else
-        die "Refusing to auto-promote a paused non-canonical rollout during reset"
-      fi
+    [[ "$live_image" == "$BASELINE_IMAGE" ]] || \
+      die "Refusing recovery because live image is not the canonical baseline"
+    [[ "$live_marker" == "$BASELINE_MARKER" ]] || \
+      die "Refusing recovery because live rollout marker is not the canonical baseline"
+
+    if [[ -n "$current" && "$stable" != "$current" &&
+          "$phase" != "Healthy" &&
+          "$full_promotion_requested" == "0" ]]; then
+      echo "==> Fully promoting verified canonical baseline"
+      echo "    Skipping canary pauses and AI analysis during trusted recovery"
+      oc argo rollouts promote "$APP_NAME" \
+        -n "$NAMESPACE" \
+        --full >/dev/null
+      full_promotion_requested=1
     fi
   fi
 
   sleep "$POLL_SECONDS"
 done
 (( SECONDS < deadline )) || die "Timed out restoring stable baseline"
+
+echo "==> Running robust post-reset validation and safe remediation"
+bash scripts/preflight-metric-ai-demo.sh --remediate
 
 echo
 oc argo rollouts get rollout "$APP_NAME" -n "$NAMESPACE"

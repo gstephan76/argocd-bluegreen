@@ -167,6 +167,16 @@ Terminal 1 — presenter:
 ./scripts/run-metric-ai-demo.sh analysis
 ```
 
+The scenario commands use lightweight state guards by default. To request the
+complete robust validation/reconciliation pass before a scenario, add
+`--preflight`:
+
+```bash
+./scripts/run-metric-ai-demo.sh healthy --preflight
+./scripts/run-metric-ai-demo.sh failure --preflight
+./scripts/run-metric-ai-demo.sh autofix --preflight
+```
+
 Terminal 2 — Rollout state:
 
 ```bash
@@ -201,8 +211,10 @@ and intentionally leaves the rejected failure scenario visible for inspection.
 
 ## Pre-flight behavior
 
-The pre-flight validates the complete dependency chain before a scenario script
-is allowed to edit `rollout.yaml`, commit, or push.
+`prepare` performs the complete pre-flight by default. `reset` performs robust
+validation after restoring the trusted canonical baseline. `healthy`, `failure`,
+and `autofix` use lightweight guards by default and run the complete pre-flight
+only when `--preflight` is explicitly requested.
 
 With `--remediate` it may safely reconcile:
 
@@ -328,6 +340,17 @@ Restore the known-good baseline:
 
 ```bash
 ./scripts/run-metric-ai-demo.sh reset
+```
+
+`reset` is a trusted recovery operation. After Git and Argo CD prove that the
+live desired state is exactly `v1.stable` with marker `baseline-v1`, reset fully
+promotes that canonical baseline while skipping canary pauses and AI analysis.
+It then runs the robust pre-flight against the recovered baseline.
+
+Clear only presentation history while keeping the demo installed:
+
+```bash
+./scripts/run-metric-ai-demo.sh clean-history
 ```
 
 Delete the demo workload and isolated agent while leaving the shared metric

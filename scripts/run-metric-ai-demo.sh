@@ -15,7 +15,24 @@ ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 [[ -n "$ROOT" ]] || die "Run this command from inside the repository"
 cd "$ROOT"
 
-run_autofix() {
+run_autofix() (
+  run_preflight=0
+  while (($#)); do
+    case "$1" in
+      --preflight)
+        run_preflight=1
+        ;;
+      -h|--help)
+        echo "Usage: ./scripts/run-metric-ai-demo.sh autofix [--preflight]"
+        exit 0
+        ;;
+      *)
+        die "Unknown autofix option '$1'"
+        ;;
+    esac
+    shift
+  done
+
   [[ -n "${GITHUB_TOKEN:-}" ]] || \
     die "GITHUB_TOKEN is required for autofix and must be supplied through the environment"
 
@@ -26,8 +43,64 @@ run_autofix() {
   [[ -f metric-ai-demo/app/analysis-template-autofix.yaml ]] || \
     die "Declarative auto-fix AnalysisTemplate is missing"
 
-  echo "==> Validating and reconciling the normal Metric-AI platform"
-  bash scripts/preflight-metric-ai-demo.sh --remediate
+  if (( run_preflight )); then
+    echo "==> Running robust Metric-AI pre-flight and safe remediation"
+    bash scripts/preflight-metric-ai-demo.sh --remediate
+  else
+    echo "==> Skipping robust pre-flight; lightweight scenario guards remain enabled"
+  fi
+
+  previous_secret_exists=0
+  previous_github_token_b64=""
+  secret_changed=0
+
+  if oc get secret metric-ai-github-bootstrap \
+    -n "$ARGOCD_NAMESPACE" >/dev/null 2>&1; then
+    previous_secret_exists=1
+    previous_github_token_b64="$(
+      oc get secret metric-ai-github-bootstrap \
+        -n "$ARGOCD_NAMESPACE" \
+        -o jsonpath='{.data.github_token}' 2>/dev/null || true
+    )"
+  fi
+
+  restore_github_credential() {
+    rc=$?
+    trap - EXIT
+
+    if (( secret_changed )); then
+      echo
+      echo "==> Restoring previous GitHub runtime credential state"
+      if (( previous_secret_exists )); then
+        if [[ -n "$previous_github_token_b64" ]]; then
+          oc patch secret metric-ai-github-bootstrap \
+            -n "$ARGOCD_NAMESPACE" \
+            --type=merge \
+            -p "{\"data\":{\"github_token\":\"${previous_github_token_b64}\"}}" \
+            >/dev/null || true
+        else
+          oc apply -f metric-ai-demo/agent/github-bootstrap-secret.yaml \
+            >/dev/null || true
+        fi
+      else
+        oc delete secret metric-ai-github-bootstrap \
+          -n "$ARGOCD_NAMESPACE" \
+          --ignore-not-found >/dev/null || true
+      fi
+
+      if oc get deployment "$AGENT_NAME" \
+        -n "$ARGOCD_NAMESPACE" >/dev/null 2>&1; then
+        oc rollout restart deployment/"$AGENT_NAME" \
+          -n "$ARGOCD_NAMESPACE" >/dev/null || true
+        oc rollout status deployment/"$AGENT_NAME" \
+          -n "$ARGOCD_NAMESPACE" \
+          --timeout=180s >/dev/null || true
+      fi
+    fi
+
+    exit "$rc"
+  }
+  trap restore_github_credential EXIT
 
   echo "==> Loading GITHUB_TOKEN into the existing runtime Secret"
   printf '%s' "$GITHUB_TOKEN" |
@@ -37,6 +110,7 @@ run_autofix() {
     --dry-run=client \
     -o yaml |
   oc apply -f - >/dev/null
+  secret_changed=1
 
   echo "==> Restarting AI agent so it reads the runtime GitHub credential"
   oc rollout restart deployment/"$AGENT_NAME" \
@@ -48,9 +122,7 @@ run_autofix() {
   echo "==> GitHub auto-fix target: ${AUTOFIX_REPO}"
   autofix_started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
-  METRIC_AI_AUTOFIX=1 \
-  METRIC_AI_SKIP_PREFLIGHT=1 \
-    bash scripts/start-metric-ai-failure.sh
+  METRIC_AI_AUTOFIX=1 bash scripts/start-metric-ai-failure.sh
 
   echo
   echo "==> Waiting for asynchronous remediation pull request"
@@ -77,7 +149,7 @@ run_autofix() {
       echo "  $pr_url"
       echo
       echo "Review and merge remain manual."
-      return 0
+      exit 0
     fi
 
     sleep "$AUTOFIX_POLL_SECONDS"
@@ -92,24 +164,24 @@ run_autofix() {
     --since-time="$autofix_started" \
     --tail=160 >&2 || true
   die "Auto-fix remediation did not produce a pull request"
-}
+)
 
 usage() {
   cat <<'EOF'
 Metric-AI demo launcher
 
 Usage:
-  ./scripts/run-metric-ai-demo.sh <command>
+  ./scripts/run-metric-ai-demo.sh <command> [options]
 
 Preparation:
   check             Validate without changing cluster state.
   prepare           Validate and safely remediate the complete demo.
 
 Scenarios:
-  healthy           Run the healthy AI-gated candidate.
+  healthy [--preflight] Run the healthy AI-gated candidate.
   promote           Promote the AI-approved candidate at the final pause.
-  failure           Run the intentional NullPointerException candidate.
-  autofix           Run the failure and create an AI-generated GitHub fix PR.
+  failure [--preflight] Run the intentional NullPointerException candidate.
+  autofix [--preflight] Run the failure and create an AI-generated GitHub fix PR.
   analysis          Show the latest AnalysisRun and AI decision.
   reset             Restore the v1.stable baseline.
   full              Rehearsal: prepare -> healthy -> promote -> failure.
@@ -121,6 +193,7 @@ Presentation:
   controller-logs   Follow metric-ai / Argo Rollouts controller logs.
 
 Cleanup:
+  clean-history     Clear AI/dashboard presentation history only.
   cleanup           Remove demo workload and isolated agent.
   cleanup-platform  Also remove the metric provider from RolloutManager.
 EOF
@@ -134,16 +207,19 @@ case "${1:-}" in
     exec bash scripts/deploy-metric-ai-demo.sh
     ;;
   healthy)
-    exec bash scripts/start-metric-ai-healthy.sh
+    shift
+    exec bash scripts/start-metric-ai-healthy.sh "$@"
     ;;
   promote)
     exec bash scripts/promote-metric-ai-stable.sh
     ;;
   failure)
-    exec bash scripts/start-metric-ai-failure.sh
+    shift
+    exec bash scripts/start-metric-ai-failure.sh "$@"
     ;;
   autofix)
-    run_autofix
+    shift
+    run_autofix "$@"
     ;;
   analysis)
     exec bash scripts/show-metric-ai-analysis.sh
@@ -176,6 +252,9 @@ case "${1:-}" in
       deployment/argo-rollouts \
       -f |
     rg --line-buffered 'metric-ai|AI metric|A2A|agent'
+    ;;
+  clean-history)
+    exec bash scripts/clean-metric-ai-history.sh
     ;;
   cleanup)
     exec bash scripts/cleanup-metric-ai-demo.sh
