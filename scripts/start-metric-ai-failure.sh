@@ -7,6 +7,8 @@ APP_NAME="${APP_NAME:-metric-ai-demo}"
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-900}"
 POLL_SECONDS="${POLL_SECONDS:-5}"
 ROLLOUT_FILE="metric-ai-demo/app/rollout.yaml"
+AUTOFIX="${METRIC_AI_AUTOFIX:-0}"
+SKIP_PREFLIGHT="${METRIC_AI_SKIP_PREFLIGHT:-0}"
 
 die(){ echo "ERROR: $*" >&2; exit 1; }
 for c in oc git sed rg date; do command -v "$c" >/dev/null 2>&1 || die "$c not found"; done
@@ -15,8 +17,12 @@ ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 [[ -n "$ROOT" ]] || die "Run inside the repository"
 cd "$ROOT"
 
-echo "==> Running Metric-AI pre-flight and safe remediation"
-bash scripts/preflight-metric-ai-demo.sh --remediate
+if [[ "$SKIP_PREFLIGHT" == "1" ]]; then
+  echo "==> Metric-AI pre-flight already completed by launcher"
+else
+  echo "==> Running Metric-AI pre-flight and safe remediation"
+  bash scripts/preflight-metric-ai-demo.sh --remediate
+fi
 
 oc whoami >/dev/null 2>&1 || die "Not logged in to OpenShift"
 
@@ -43,6 +49,17 @@ sed -i -E \
   's#image: ghcr.io/kdubois/argo-rollouts-quarkus-demo:[^[:space:]]+#image: ghcr.io/kdubois/argo-rollouts-quarkus-demo:v2.nullpointer#' \
   "$ROLLOUT_FILE"
 
+if [[ "$AUTOFIX" == "1" ]]; then
+  echo "==> Selecting declarative auto-fix AnalysisTemplate"
+  analysis_template="metric-ai-analysis-autofix"
+else
+  analysis_template="metric-ai-analysis"
+fi
+
+sed -i -E \
+  "s#templateName: metric-ai-analysis(-autofix)?#templateName: ${analysis_template}#" \
+  "$ROLLOUT_FILE"
+
 rg -q 'demo-rollout-revision:' "$ROLLOUT_FILE" || \
   die "demo-rollout-revision annotation not found"
 
@@ -54,7 +71,14 @@ sed -i -E \
 
 git add "$ROLLOUT_FILE"
 git diff --cached --check
-git commit -m "Trigger broken AI-gated canary"
+
+if [[ "$AUTOFIX" == "1" ]]; then
+  commit_message="Trigger broken AI-gated canary with auto-fix"
+else
+  commit_message="Trigger broken AI-gated canary"
+fi
+
+git commit -m "$commit_message"
 git push origin "$branch"
 
 revision="$(git rev-parse HEAD)"

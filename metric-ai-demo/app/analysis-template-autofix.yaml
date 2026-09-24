@@ -1,0 +1,26 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: metric-ai-analysis-autofix
+  namespace: metric-ai-demo
+spec:
+  metrics:
+    - name: ai-canary-analysis-autofix
+      failureLimit: 0
+      count: 1
+      initialDelay: 5s
+      provider:
+        plugin:
+          argoproj-labs/metric-ai:
+            agentUrl: http://metric-ai-kubernetes-agent.openshift-gitops.svc.cluster.local:8080
+            stableLabel: app=metric-ai-demo,role=stable
+            canaryLabel: app=metric-ai-demo,role=canary
+            githubUrl: https://github.com/gstephan76/argo-rollouts-quarkus-demo.git
+            baseBranch: main
+            extraPrompt: >-
+              Compare the canary against the stable pods. Focus on new exceptions,
+              failed requests, latency/resource degradation, and user-facing impact.
+              Treat cosmetic/version differences as expected. Recommend promotion
+              only when the canary is at least as healthy as stable. If a code defect
+              causes rollback, diagnose the source defect and use the configured
+              GitHub remediation tools to propose the smallest safe fix as a pull request.

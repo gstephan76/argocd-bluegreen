@@ -39,6 +39,9 @@ sed -i -E \
 sed -i -E \
   "s#demo-rollout-revision: \".*\"#demo-rollout-revision: \"${BASELINE_MARKER}\"#" \
   "$ROLLOUT_FILE"
+sed -i -E \
+  's#templateName: metric-ai-analysis-autofix#templateName: metric-ai-analysis#' \
+  "$ROLLOUT_FILE"
 
 git add "$ROLLOUT_FILE"
 git diff --cached --check

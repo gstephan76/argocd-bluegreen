@@ -3,6 +3,7 @@ kind: Kustomization
 resources:
   - rbac.yaml
   - analysis-template.yaml
+  - analysis-template-autofix.yaml
   - rollout.yaml
   - service.yaml
   - route.yaml
