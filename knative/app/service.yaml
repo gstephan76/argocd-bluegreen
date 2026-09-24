@@ -44,8 +44,8 @@ spec:
                 path: index.html
   traffic:
     - revisionName: httpd-single-page-00001
-      percent: 100
+      percent: 50
       tag: current
-    - latestRevision: true
-      percent: 0
+    - revisionName: httpd-single-page-00002
+      percent: 50
       tag: candidate
