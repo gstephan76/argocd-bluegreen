@@ -15,11 +15,15 @@ spec:
     metadata:
       labels:
         app: bluegreen-demo
+      annotations:
+        # Stable identity for the trusted BLUE recovery point. Scenario scripts
+        # replace this with a unique marker for every fresh GREEN attempt.
+        demo-rollout-revision: "baseline-blue"
     spec:
       containers:
         - name: rollouts-demo
           # Initial stable version (BLUE).
-          # Change this tag to :green in Git to start a blue/green rollout.
+          # switch-green.sh changes this tag and revision marker declaratively.
           image: argoproj/rollouts-demo:blue
           imagePullPolicy: Always
           ports:
@@ -52,15 +56,16 @@ spec:
       previewService: bluegreen-demo-preview
 
       # Before GREEN can be promoted, Argo Rollouts creates an AnalysisRun
-      # from bluegreen-demo-smoke-test. The AnalysisRun executes a Job that
-      # performs HTTP checks against the preview Service. Failed analysis
-      # aborts the rollout before the active Service is switched.
+      # from bluegreen-demo-smoke-test. The AnalysisRun verifies both HTTP
+      # availability and the expected /color identity on the preview Service.
       prePromotionAnalysis:
         templates:
           - templateName: bluegreen-demo-smoke-test
         args:
           - name: preview-url
             value: http://bluegreen-demo-preview.bluegreen-demo.svc.cluster.local
+          - name: expected-color
+            value: blue
 
       # After promotion, validate the candidate through the ACTIVE Service.
       # A failed/error post-promotion AnalysisRun causes Argo Rollouts to
@@ -71,6 +76,8 @@ spec:
         args:
           - name: active-url
             value: http://bluegreen-demo-active.bluegreen-demo.svc.cluster.local
+          - name: expected-color
+            value: blue
 
       # Manual gate remains after successful pre-promotion analysis.
       autoPromotionEnabled: false

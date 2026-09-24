@@ -43,23 +43,30 @@ ACTIVE ReplicaSet                 PREVIEW ReplicaSet
 
 ### Pre-promotion analysis
 
-`bluegreen-demo/analysis-template.yaml` creates a Job that performs three `curl --fail` requests against:
+`bluegreen-demo/analysis-template.yaml` performs three HTTP checks against the
+preview Service's `/color` endpoint and requires the response identity to match
+the expected candidate color. For the GREEN scenario the expected body is
+`"green"`.
 
 ```text
-http://bluegreen-demo-preview.bluegreen-demo.svc.cluster.local
+http://bluegreen-demo-preview.bluegreen-demo.svc.cluster.local/color
 ```
 
-The active Service is not switched until this AnalysisRun succeeds.
+The active Service is not switched until this AnalysisRun succeeds, so the gate
+proves both availability and candidate identity.
 
 ### Post-promotion analysis
 
-`bluegreen-demo/post-analysis-template.yaml` creates a second Job that performs five `curl --fail` requests against:
+`bluegreen-demo/post-analysis-template.yaml` performs five equivalent checks
+through the active Service after cutover:
 
 ```text
-http://bluegreen-demo-active.bluegreen-demo.svc.cluster.local
+http://bluegreen-demo-active.bluegreen-demo.svc.cluster.local/color
 ```
 
-Only after this AnalysisRun succeeds is the candidate marked stable.
+The post-analysis Job has a 60-second deadline because five checks can consume
+up to 35 seconds from curl timeouts and sleeps alone. Only after this AnalysisRun
+succeeds is the candidate marked stable.
 
 `scaleDownDelaySeconds` is intentionally omitted. With post-promotion analysis configured, the previous stable ReplicaSet is retained until that analysis completes, so it remains available as the rollback target during post-promotion validation.
 
@@ -141,17 +148,28 @@ cd ~/Documents/POCs/ArgoCD
 bash scripts/deploy-demo.sh
 ```
 
-The script validates Git state, applies the Rollouts bootstrap, reconciles the Argo CD Application to the exact Git commit, waits for both AnalysisTemplates, and prints the active and preview URLs.
+The script validates Git state, applies the Rollouts bootstrap, reconciles the
+Argo CD Application to the exact Git commit, waits for both AnalysisTemplates,
+and prints the active and preview URLs. Its contract is platform/GitOps
+reconciliation only; it does **not** claim that BLUE is the canonical stable
+presentation baseline.
 
 ### 2. Ensure a clean BLUE baseline
 
-The repository may already request GREEN after an earlier demo. This command is safe to run either way:
+The repository may already request GREEN after an earlier demo. This command is
+the trusted recovery operation and is safe to run either way:
 
 ```bash
 bash scripts/prepare-blue.sh
 ```
 
-If BLUE is already active, it exits without changing anything. Otherwise it commits the Git change to BLUE, waits for the BLUE pre-promotion analysis, promotes it, waits for the post-promotion analysis, and returns only when BLUE is stable.
+`prepare-blue.sh` restores the exact declarative BLUE state (`:blue`,
+`baseline-blue`, and BLUE analysis identity), waits for Argo CD to sync that
+exact Git revision, then uses `oc argo rollouts promote --full` only after the
+live Rollout is proven to be that canonical desired state. Recovery therefore
+does not depend on the smoke-test mechanism being healthy. It returns only when
+BLUE is `Healthy` and active/preview/stable/current all converge on the same
+ReplicaSet, then reruns platform/GitOps reconciliation.
 
 ### 3. Create and validate GREEN without production cutover
 
@@ -162,23 +180,31 @@ bash scripts/switch-green.sh --preview-only
 The flow is:
 
 ```text
-Git BLUE -> GREEN
+settled canonical BLUE
+        |
+        v
+Git BLUE -> GREEN + fresh unique revision marker
         |
         v
 Argo CD exact-revision sync
         |
         v
-GREEN preview ReplicaSet Ready
+GREEN preview == current desired ReplicaSet
         |
         v
 pre-promotion AnalysisRun
         |
         v
-3 HTTP smoke checks succeed
+3 HTTP + /color identity checks succeed
         |
         v
 PAUSED before production cutover
 ```
+
+Every GREEN attempt gets a new `demo-rollout-revision` annotation, so a retry
+cannot accidentally reuse the AnalysisRun/ReplicaSet state of a previous failed
+attempt. A fresh GREEN attempt is accepted only from the settled canonical BLUE
+baseline; after any failed attempt, run `prepare-blue.sh` first.
 
 At this point:
 
@@ -195,7 +221,14 @@ Open both URLs printed by the script and compare them.
 bash scripts/promote-bluegreen.sh
 ```
 
-The helper verifies the successful pre-analysis and paused state, promotes exactly one step, waits for the active Service switch, waits for the post-promotion AnalysisRun, and verifies that the candidate becomes both active and stable.
+The helper binds promotion to the exact Git/Argo CD revision and live
+candidate before changing production traffic. It requires a clean synchronized
+Git tree, `ACTIVE == stableRS`, `PREVIEW == currentPodHash`, a GREEN preview,
+successful pre-analysis, and the manual `Paused` gate. It then promotes exactly
+one step, waits for the active Service switch and post-promotion AnalysisRun,
+and proves that GREEN becomes active, preview, current, and stable. If
+post-analysis fails, the script separately verifies that ACTIVE actually
+returns to the previous stable ReplicaSet before reporting rollback success.
 
 Expected flow:
 
@@ -223,7 +256,12 @@ That performs the preview/pre-analysis phase and then delegates promotion and po
 
 ## Manual demo without helper scripts
 
-The sequence below performs the same demo using `oc`, Git, and shell commands directly.
+The sequence below is a low-level educational equivalent for the normal
+Blue/Green transition. The scripted `prepare-blue.sh` recovery is intentionally
+stronger: it is a trusted recovery operation that verifies the canonical BLUE
+Git/live identity and uses `promote --full` to bypass analysis during recovery.
+Do not use an ordinary analyzed BLUE rollout as a substitute when recovering
+from broken analysis infrastructure.
 
 ### 1. Verify access and required APIs
 
@@ -552,7 +590,15 @@ Rollout aborts
 ACTIVE switches back to previous stable BLUE
 ```
 
-After a failed candidate, reconcile Git back to the intended stable version before starting another attempt.
+After a failed candidate, run:
+
+```bash
+bash scripts/prepare-blue.sh
+```
+
+before starting another GREEN attempt. `switch-green.sh` deliberately refuses
+to create a new candidate unless Git, Argo CD, and the live Rollout prove the
+settled canonical BLUE baseline.
 
 ## Useful diagnostics
 

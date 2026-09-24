@@ -32,6 +32,7 @@ do
 done
 
 oc whoami >/dev/null 2>&1 || die "Not logged in to OpenShift."
+oc argo rollouts version >/dev/null 2>&1 || die "Argo Rollouts oc plugin is required."
 
 branch="$(git branch --show-current)"
 [[ -n "$branch" ]] || die "Detached HEAD is not supported."
@@ -132,12 +133,11 @@ echo "Preview URL: https://${preview_host}"
 echo "PRE analysis : ${ANALYSIS_TEMPLATE}"
 echo "POST analysis: ${POST_ANALYSIS_TEMPLATE}"
 echo
+echo "Platform/GitOps reconciliation complete."
+echo "This command does not assert a canonical presentation baseline."
 case "$desired_image" in
-  argoproj/rollouts-demo:blue)
-    echo "Next: bash scripts/switch-green.sh --preview-only"
-    ;;
-  argoproj/rollouts-demo:green)
-    echo "For a clean BLUE -> GREEN replay: bash scripts/prepare-blue.sh"
+  argoproj/rollouts-demo:blue|argoproj/rollouts-demo:green)
+    echo "Next: bash scripts/prepare-blue.sh"
     ;;
   *)
     echo "Unexpected demo image in Git: ${desired_image}"

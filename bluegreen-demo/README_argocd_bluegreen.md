@@ -1,5 +1,11 @@
 # Argo CD + Argo Rollouts Blue/Green Deployment on OpenShift
 
+> **Historical document.** The authoritative and maintained procedure is
+> `bluegreen-demo/README.md`. The scripts and manifests now enforce stronger
+> state binding, trusted BLUE recovery, fresh per-attempt rollout markers, and
+> HTTP identity validation. Do not use this older document as the operational
+> runbook.
+
 This demo implements a complete **GitOps blue/green deployment** on Red Hat OpenShift using:
 
 - **Argo CD** for GitOps synchronization

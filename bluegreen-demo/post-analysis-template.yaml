@@ -6,9 +6,10 @@ metadata:
 spec:
   args:
     - name: active-url
+    - name: expected-color
 
   metrics:
-    - name: active-http-smoke-test
+    - name: active-http-and-identity-smoke-test
       provider:
         job:
           metadata:
@@ -16,7 +17,9 @@ spec:
               app: bluegreen-demo-post-analysis
           spec:
             backoffLimit: 0
-            activeDeadlineSeconds: 30
+            # Five checks can consume up to 35 seconds from curl timeout +
+            # sleeps alone. Keep enough budget for Job/pod startup overhead.
+            activeDeadlineSeconds: 60
             template:
               metadata:
                 labels:
@@ -41,11 +44,28 @@ spec:
                       - -c
                       - |
                         set -eu
+
                         url="{{args.active-url}}"
+                        expected="{{args.expected-color}}"
                         echo "Post-promotion production smoke test: ${url}"
+                        echo "Expected active color: ${expected}"
+
                         for attempt in 1 2 3 4 5; do
-                          echo "HTTP check ${attempt}/5"
-                          curl --fail --silent --show-error --max-time 5 "${url}" >/dev/null
+                          echo "HTTP + identity check ${attempt}/5"
+                          body="$(
+                            curl \
+                              --fail \
+                              --silent \
+                              --show-error \
+                              --max-time 5 \
+                              "${url}/color"
+                          )"
+                          echo "Observed /color: ${body}"
+                          if [ "${body}" != "\"${expected}\"" ]; then
+                            echo "Expected /color to return \"${expected}\", got ${body}" >&2
+                            exit 1
+                          fi
                           sleep 2
                         done
-                        echo "Post-promotion production smoke test passed."
+
+                        echo "Post-promotion HTTP and identity smoke test passed."
