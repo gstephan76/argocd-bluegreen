@@ -15,12 +15,12 @@ spec:
       labels:
         app: metric-ai-demo
       annotations:
-        demo-rollout-revision: "baseline-v1"
+        demo-rollout-revision: "ai-nullpointer-20260924T003435Z-3220513"
     spec:
       serviceAccountName: metric-ai-demo
       containers:
         - name: metric-ai-demo
-          image: ghcr.io/kdubois/argo-rollouts-quarkus-demo:v1.stable
+          image: ghcr.io/kdubois/argo-rollouts-quarkus-demo:v2.nullpointer
           imagePullPolicy: Always
           ports:
             - name: http
@@ -71,6 +71,6 @@ spec:
             duration: 20s
         - analysis:
             templates:
-              - templateName: metric-ai-analysis
+              - templateName: metric-ai-analysis-autofix
         - setWeight: 100
         - pause: {}
