@@ -97,31 +97,133 @@ if [[ -n "$label_semver" && -n "$image_semver" && "$label_semver" != "$image_sem
 fi
 
 controller_semver="${label_semver:-$image_semver}"
-recommended_plugin=""
-if [[ -n "$controller_semver" ]]; then
-  controller_major="${controller_semver%%.*}"
-  controller_minor_rest="${controller_semver#*.}"
-  controller_minor="${controller_minor_rest%%.*}"
 
-  if [[ "$controller_major" == "1" && "$controller_minor" == "8" ]]; then
-    recommended_plugin="v0.0.1"
-  elif [[ "$controller_major" == "1" && "$controller_minor" == "9" ]]; then
-    recommended_plugin="v1.9.0"
-  else
-    die "Unsupported detected Argo Rollouts controller version ${controller_semver}"
+# Red Hat controller images are normally digest-pinned, so their image
+# reference often carries no upstream Argo Rollouts semver. If controller
+# metadata is opaque, derive compatibility automatically from the installed
+# Red Hat OpenShift GitOps CSV.
+gitops_version=""
+gitops_csv_namespace=""
+gitops_csv_name=""
+gitops_detection_source=""
+
+gitops_subscription_record="$(
+  oc get subscriptions.operators.coreos.com -A \
+    -o jsonpath='{range .items[*]}{.metadata.namespace}{"|"}{.metadata.name}{"|"}{.status.installedCSV}{"\n"}{end}' \
+    2>/dev/null |
+  awk -F'|' '
+    index(tolower($2 " " $3), "gitops") && $3 != "" {
+      print $1 "|" $2 "|" $3
+    }
+  ' |
+  sort -u |
+  sed -n '1p'
+)"
+
+if [[ -n "$gitops_subscription_record" ]]; then
+  IFS='|' read -r gitops_subscription_namespace gitops_subscription_name gitops_csv_name \
+    <<< "$gitops_subscription_record"
+  gitops_csv_namespace="$gitops_subscription_namespace"
+  gitops_version="$(
+    oc get csv "$gitops_csv_name" \
+      -n "$gitops_csv_namespace" \
+      -o jsonpath='{.spec.version}' \
+      2>/dev/null || true
+  )"
+  if [[ -n "$gitops_version" ]]; then
+    gitops_detection_source="Subscription ${gitops_subscription_namespace}/${gitops_subscription_name}"
   fi
 fi
+
+if [[ -z "$gitops_version" ]]; then
+  gitops_csv_record="$(
+    oc get csv -A \
+      -o jsonpath='{range .items[*]}{.metadata.namespace}{"|"}{.metadata.name}{"|"}{.spec.version}{"|"}{.spec.displayName}{"|"}{.status.phase}{"\n"}{end}' \
+      2>/dev/null |
+    awk -F'|' '
+      index(tolower($2 " " $4), "gitops") &&
+      $3 != "" &&
+      $5 == "Succeeded" {
+        print $1 "|" $2 "|" $3
+      }
+    ' |
+    sort -t'|' -k3,3V |
+    sed -n '$p'
+  )"
+
+  if [[ -n "$gitops_csv_record" ]]; then
+    IFS='|' read -r gitops_csv_namespace gitops_csv_name gitops_version \
+      <<< "$gitops_csv_record"
+    gitops_detection_source="ClusterServiceVersion ${gitops_csv_namespace}/${gitops_csv_name}"
+  fi
+fi
+
+gitops_rollouts_semver=""
+case "$gitops_version" in
+  1.21.*)
+    gitops_rollouts_semver="1.9.0"
+    ;;
+  1.20.*)
+    gitops_rollouts_semver="1.8.4"
+    ;;
+  1.19.*|1.18.*|1.17.*)
+    gitops_rollouts_semver="1.8.3"
+    ;;
+esac
+
+if [[ -n "$gitops_version" ]]; then
+  echo "==> Detected Red Hat OpenShift GitOps ${gitops_version}"
+  echo "    Source: ${gitops_detection_source}"
+  if [[ -n "$gitops_rollouts_semver" ]]; then
+    echo "    Bundled Argo Rollouts: ${gitops_rollouts_semver}"
+  else
+    echo "    No built-in Rollouts compatibility mapping for this GitOps release"
+  fi
+fi
+
+if [[ -n "$controller_semver" && -n "$gitops_rollouts_semver" ]]; then
+  controller_series="${controller_semver%.*}"
+  gitops_series="${gitops_rollouts_semver%.*}"
+  [[ "$controller_series" == "$gitops_series" ]] || \
+    die "Controller semver ${controller_semver} disagrees with Red Hat GitOps ${gitops_version} bundle (${gitops_rollouts_semver})"
+fi
+
+effective_rollouts_semver="${controller_semver:-$gitops_rollouts_semver}"
+compatibility_source=""
+if [[ -n "$controller_semver" ]]; then
+  compatibility_source="live controller metadata"
+elif [[ -n "$gitops_rollouts_semver" ]]; then
+  compatibility_source="Red Hat OpenShift GitOps ${gitops_version} component mapping"
+fi
+
+recommended_plugin=""
+case "$effective_rollouts_semver" in
+  1.8.*)
+    recommended_plugin="v0.0.1"
+    ;;
+  1.9.*)
+    recommended_plugin="v1.9.0"
+    ;;
+  "")
+    ;;
+  *)
+    die "Unsupported detected Argo Rollouts version ${effective_rollouts_semver}"
+    ;;
+esac
 
 if [[ -z "$METRIC_AI_PLUGIN_VERSION" ]]; then
   [[ -n "$recommended_plugin" ]] || {
     echo "Controller image: ${controller_image:-unknown}" >&2
     echo "Controller app.kubernetes.io/version: ${controller_version_label:-unknown}" >&2
-    die "Could not determine controller semver safely; set METRIC_AI_PLUGIN_VERSION explicitly"
+    echo "Detected Red Hat OpenShift GitOps version: ${gitops_version:-unknown}" >&2
+    die "Could not determine metric-ai compatibility automatically"
   }
   METRIC_AI_PLUGIN_VERSION="$recommended_plugin"
+  echo "==> Automatically selected metric-ai ${METRIC_AI_PLUGIN_VERSION}"
+  echo "    Compatibility source: ${compatibility_source}"
 elif [[ -n "$recommended_plugin" && "$METRIC_AI_PLUGIN_VERSION" != "$recommended_plugin" ]]; then
   echo "WARNING: explicit METRIC_AI_PLUGIN_VERSION=${METRIC_AI_PLUGIN_VERSION}" >&2
-  echo "         differs from detected controller recommendation ${recommended_plugin}" >&2
+  echo "         differs from detected recommendation ${recommended_plugin}" >&2
 fi
 
 case "$METRIC_AI_PLUGIN_VERSION" in
@@ -216,7 +318,9 @@ echo "metric-ai plugin is configured."
 echo "Selected upstream release: ${METRIC_AI_PLUGIN_VERSION}"
 echo "Rollouts controller image: ${controller_image:-unknown}"
 [[ -n "$controller_semver" ]] && echo "Detected controller version: ${controller_semver}"
+[[ -n "$gitops_version" ]] && echo "Detected Red Hat OpenShift GitOps: ${gitops_version}"
+[[ -n "$gitops_rollouts_semver" ]] && echo "Red Hat bundled Argo Rollouts: ${gitops_rollouts_semver}"
+[[ -n "$compatibility_source" ]] && echo "Compatibility source: ${compatibility_source}"
 echo
-echo "Compatibility is selected from the live controller, never from the local CLI."
-echo "If the controller version cannot be proven from its label/image tag,"
-echo "set METRIC_AI_PLUGIN_VERSION explicitly."
+echo "Compatibility never depends on the workstation Argo Rollouts CLI version."
+echo "METRIC_AI_PLUGIN_VERSION remains available only as an explicit override."
