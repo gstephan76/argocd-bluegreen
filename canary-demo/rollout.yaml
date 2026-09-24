@@ -18,11 +18,11 @@ spec:
       annotations:
         # Changing this pod-template annotation intentionally creates a fresh
         # Rollout revision without changing the demo image.
-        demo-rollout-revision: "baseline-blue"
+        demo-rollout-revision: "prometheus-20260924T215822Z-3793315"
     spec:
       containers:
         - name: rollouts-demo
-          image: argoproj/rollouts-demo:blue
+          image: argoproj/rollouts-demo:yellow
           imagePullPolicy: Always
           ports:
             - name: http
