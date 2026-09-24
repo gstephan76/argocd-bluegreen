@@ -5,37 +5,62 @@ NAMESPACE="${NAMESPACE:-rollouts-canary-demo}"
 ARGOCD_NAMESPACE="${ARGOCD_NAMESPACE:-openshift-gitops}"
 APP_NAME="${APP_NAME:-rollouts-canary-demo}"
 ANALYSIS_TEMPLATE="${ANALYSIS_TEMPLATE:-rollouts-canary-demo-prometheus}"
+ROLLOUT_MANAGER="${ROLLOUT_MANAGER:-argo-rollout}"
+ROLLOUT_MANAGER_NAMESPACE="${ROLLOUT_MANAGER_NAMESPACE:-openshift-gitops}"
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-300}"
 MONITORING_TIMEOUT_SECONDS="${MONITORING_TIMEOUT_SECONDS:-600}"
 POLL_SECONDS="${POLL_SECONDS:-5}"
 
 die(){ echo "ERROR: $*" >&2; exit 1; }
-command -v oc >/dev/null || die "oc not found"
-command -v git >/dev/null || die "git not found"
+for c in oc git; do command -v "$c" >/dev/null 2>&1 || die "$c not found"; done
 
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 [[ -n "$ROOT" ]] || die "Run inside the repository"
 cd "$ROOT"
 
+if ! git diff --quiet || ! git diff --cached --quiet; then
+  die "Tracked Git changes exist"
+fi
+
+branch="$(git branch --show-current)"
+[[ -n "$branch" ]] || die "Detached HEAD is not supported"
+git fetch origin "$branch"
+read -r behind ahead < <(git rev-list --left-right --count "origin/${branch}...HEAD")
+(( behind == 0 && ahead == 0 )) || die "Local branch must match origin/${branch}"
+desired_revision="$(git rev-parse HEAD)"
+
 oc whoami >/dev/null 2>&1 || die "Not logged in to OpenShift"
 
-for crd in   applications.argoproj.io   argocds.argoproj.io   rollouts.argoproj.io   rolloutmanagers.argoproj.io   analysistemplates.argoproj.io   analysisruns.argoproj.io   servicemonitors.monitoring.coreos.com
+for crd in \
+  applications.argoproj.io \
+  argocds.argoproj.io \
+  rollouts.argoproj.io \
+  rolloutmanagers.argoproj.io \
+  analysistemplates.argoproj.io \
+  analysisruns.argoproj.io \
+  servicemonitors.monitoring.coreos.com
 do
   oc get crd "$crd" >/dev/null 2>&1 || die "Missing CRD: $crd"
 done
 
 oc argo rollouts version >/dev/null 2>&1 || die "Argo Rollouts CLI plugin is required"
 
-[[ -f platform-monitoring/user-workload-monitoring.yaml ]] ||   die "platform-monitoring/user-workload-monitoring.yaml not found"
+[[ -f platform-monitoring/user-workload-monitoring.yaml ]] || \
+  die "platform-monitoring/user-workload-monitoring.yaml not found"
 
 echo "==> Ensuring OpenShift user-workload monitoring is enabled"
-existing_monitoring_config="$(oc get configmap cluster-monitoring-config   -n openshift-monitoring   -o jsonpath='{.data.config\.yaml}' 2>/dev/null || true)"
+existing_monitoring_config="$(
+  oc get configmap cluster-monitoring-config \
+    -n openshift-monitoring \
+    -o jsonpath='{.data.config\.yaml}' 2>/dev/null || true
+)"
 
 if [[ -z "$existing_monitoring_config" ]]; then
   oc apply -f platform-monitoring/user-workload-monitoring.yaml
 elif [[ "$existing_monitoring_config" == *"enableUserWorkload: true"* ]]; then
   echo "    user-workload monitoring is already enabled"
-elif [[ "$existing_monitoring_config" == "enableUserWorkload: false" ||         "$existing_monitoring_config" == $'enableUserWorkload: false\n' ]]; then
+elif [[ "$existing_monitoring_config" == "enableUserWorkload: false" ||
+        "$existing_monitoring_config" == $'enableUserWorkload: false\n' ]]; then
   oc apply -f platform-monitoring/user-workload-monitoring.yaml
 else
   echo "Existing openshift-monitoring/cluster-monitoring-config:" >&2
@@ -46,7 +71,8 @@ fi
 echo "==> Waiting for prometheus-user-workload"
 deadline=$((SECONDS + MONITORING_TIMEOUT_SECONDS))
 while (( SECONDS < deadline )); do
-  if oc get statefulset prometheus-user-workload     -n openshift-user-workload-monitoring >/dev/null 2>&1; then
+  if oc get statefulset prometheus-user-workload \
+    -n openshift-user-workload-monitoring >/dev/null 2>&1; then
     break
   fi
   echo "    waiting for prometheus-user-workload StatefulSet"
@@ -54,19 +80,35 @@ while (( SECONDS < deadline )); do
 done
 (( SECONDS < deadline )) || die "Timed out waiting for prometheus-user-workload"
 
-oc rollout status statefulset/prometheus-user-workload   -n openshift-user-workload-monitoring   --timeout="${MONITORING_TIMEOUT_SECONDS}s"
+oc rollout status statefulset/prometheus-user-workload \
+  -n openshift-user-workload-monitoring \
+  --timeout="${MONITORING_TIMEOUT_SECONDS}s"
 
-oc get service thanos-querier   -n openshift-monitoring >/dev/null 2>&1 ||   die "OpenShift Thanos Querier service was not found."
-
-branch="$(git branch --show-current)"
-[[ -n "$branch" ]] || die "Detached HEAD is not supported"
-git fetch origin
-read -r behind ahead < <(git rev-list --left-right --count "origin/${branch}...HEAD")
-(( behind == 0 && ahead == 0 )) || die "Local branch must match origin/${branch}"
-desired_revision="$(git rev-parse HEAD)"
+oc get service thanos-querier \
+  -n openshift-monitoring >/dev/null 2>&1 || \
+  die "OpenShift Thanos Querier service was not found."
 
 echo "==> Applying Argo Rollouts bootstrap and enabling the Argo CD Rollouts UI"
 oc apply -k bootstrap
+
+echo "==> Waiting for RolloutManager ${ROLLOUT_MANAGER}"
+deadline=$((SECONDS + TIMEOUT_SECONDS))
+while (( SECONDS < deadline )); do
+  phase="$(
+    oc get rolloutmanager "$ROLLOUT_MANAGER" \
+      -n "$ROLLOUT_MANAGER_NAMESPACE" \
+      -o jsonpath='{.status.phase}' 2>/dev/null || true
+  )"
+  controller="$(
+    oc get rolloutmanager "$ROLLOUT_MANAGER" \
+      -n "$ROLLOUT_MANAGER_NAMESPACE" \
+      -o jsonpath='{.status.rolloutController}' 2>/dev/null || true
+  )"
+  printf '    phase=%s controller=%s\n' "${phase:-unknown}" "${controller:-unknown}"
+  [[ "$phase" == "Available" || "$controller" == "Available" ]] && break
+  sleep "$POLL_SECONDS"
+done
+(( SECONDS < deadline )) || die "Timed out waiting for RolloutManager"
 
 echo "==> Applying canary Prometheus access bootstrap"
 oc apply -f bootstrap/canary-prometheus-access.yaml
@@ -74,7 +116,11 @@ oc apply -f bootstrap/canary-prometheus-access.yaml
 echo "==> Waiting for the Prometheus service-account token"
 deadline=$((SECONDS + TIMEOUT_SECONDS))
 while (( SECONDS < deadline )); do
-  token_data="$(oc get secret rollouts-canary-prometheus-token     -n "$NAMESPACE"     -o jsonpath='{.data.token}' 2>/dev/null || true)"
+  token_data="$(
+    oc get secret rollouts-canary-prometheus-token \
+      -n "$NAMESPACE" \
+      -o jsonpath='{.data.token}' 2>/dev/null || true
+  )"
   [[ -n "$token_data" ]] && break
   sleep "$POLL_SECONDS"
 done
@@ -84,15 +130,31 @@ echo "==> Applying Argo CD Application"
 oc apply -f argocd/application-canary.yaml
 
 echo "==> Requesting Argo CD hard refresh"
-oc annotate applications.argoproj.io "$APP_NAME"   -n "$ARGOCD_NAMESPACE"   argocd.argoproj.io/refresh=hard   --overwrite >/dev/null
+oc annotate applications.argoproj.io "$APP_NAME" \
+  -n "$ARGOCD_NAMESPACE" \
+  argocd.argoproj.io/refresh=hard \
+  --overwrite >/dev/null
 
 echo "==> Waiting for Argo CD revision ${desired_revision:0:12}"
 deadline=$((SECONDS + TIMEOUT_SECONDS))
 while (( SECONDS < deadline )); do
-  sync="$(oc get applications.argoproj.io "$APP_NAME" -n "$ARGOCD_NAMESPACE" -o jsonpath='{.status.sync.status}' 2>/dev/null || true)"
-  health="$(oc get applications.argoproj.io "$APP_NAME" -n "$ARGOCD_NAMESPACE" -o jsonpath='{.status.health.status}' 2>/dev/null || true)"
-  revision="$(oc get applications.argoproj.io "$APP_NAME" -n "$ARGOCD_NAMESPACE" -o jsonpath='{.status.sync.revision}' 2>/dev/null || true)"
-  printf '    sync=%s health=%s revision=%s\n'     "${sync:-unknown}" "${health:-unknown}" "${revision:0:12}"
+  sync="$(
+    oc get applications.argoproj.io "$APP_NAME" \
+      -n "$ARGOCD_NAMESPACE" \
+      -o jsonpath='{.status.sync.status}' 2>/dev/null || true
+  )"
+  health="$(
+    oc get applications.argoproj.io "$APP_NAME" \
+      -n "$ARGOCD_NAMESPACE" \
+      -o jsonpath='{.status.health.status}' 2>/dev/null || true
+  )"
+  revision="$(
+    oc get applications.argoproj.io "$APP_NAME" \
+      -n "$ARGOCD_NAMESPACE" \
+      -o jsonpath='{.status.sync.revision}' 2>/dev/null || true
+  )"
+  printf '    sync=%s health=%s revision=%s\n' \
+    "${sync:-unknown}" "${health:-unknown}" "${revision:0:12}"
   [[ "$sync" == "Synced" && "$revision" == "$desired_revision" ]] && break
   sleep "$POLL_SECONDS"
 done
@@ -101,23 +163,35 @@ done
 echo "==> Waiting for Prometheus AnalysisTemplate"
 deadline=$((SECONDS + TIMEOUT_SECONDS))
 while (( SECONDS < deadline )); do
-  if oc get analysistemplate "$ANALYSIS_TEMPLATE"     -n "$NAMESPACE" >/dev/null 2>&1; then
-    break
-  fi
+  oc get analysistemplate "$ANALYSIS_TEMPLATE" \
+    -n "$NAMESPACE" >/dev/null 2>&1 && break
   sleep "$POLL_SECONDS"
 done
 (( SECONDS < deadline )) || die "Timed out waiting for AnalysisTemplate $ANALYSIS_TEMPLATE"
 
 echo "==> Waiting for Blackbox Exporter"
-oc rollout status deployment/rollouts-canary-blackbox   -n "$NAMESPACE"   --timeout="${TIMEOUT_SECONDS}s"
+oc rollout status deployment/rollouts-canary-blackbox \
+  -n "$NAMESPACE" \
+  --timeout="${TIMEOUT_SECONDS}s"
+
+echo "==> Waiting for Rollout"
+deadline=$((SECONDS + TIMEOUT_SECONDS))
+while (( SECONDS < deadline )); do
+  oc get rollout "$APP_NAME" -n "$NAMESPACE" >/dev/null 2>&1 && break
+  sleep "$POLL_SECONDS"
+done
+(( SECONDS < deadline )) || die "Timed out waiting for Rollout ${APP_NAME}"
 
 echo "==> Waiting for rollout pods"
-oc wait --for=condition=Ready pod   -l app="$APP_NAME"   -n "$NAMESPACE"   --timeout="${TIMEOUT_SECONDS}s"
+oc wait --for=condition=Ready pod \
+  -l app="$APP_NAME" \
+  -n "$NAMESPACE" \
+  --timeout="${TIMEOUT_SECONDS}s"
 
 echo
 oc argo rollouts get rollout "$APP_NAME" -n "$NAMESPACE"
 host="$(oc get route "$APP_NAME" -n "$NAMESPACE" -o jsonpath='{.spec.host}')"
 echo
-echo "Canary demo deployed: https://${host}"
-echo "Prometheus gate: exact probe_http_status_code == 200, 3 consecutive samples."
-echo "Next: bash scripts/start-canary-yellow.sh"
+echo "Canary platform/GitOps reconciliation complete: https://${host}"
+echo "Prometheus gate: all 3 measurements must satisfy HTTP 200 and probe_success=1."
+echo "Next: bash scripts/prepare-canary-blue.sh"

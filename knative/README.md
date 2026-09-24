@@ -18,6 +18,12 @@ This directory contains two complementary autoscaling demonstrations:
 
 They intentionally do **not** control the same Pods.
 
+The Knative Serving application itself is GitOps-managed by
+`argocd/application-knative.yaml`. The Serverless Operator and `KnativeServing`
+installation remain shared platform resources, but the `KnativeService`
+template and all V1/V2 traffic changes are committed to Git and reconciled by
+Argo CD. The scenario scripts do not `oc patch` the live Knative Service.
+
 ```text
 HTTP request path                           asynchronous/event path
 
@@ -110,7 +116,8 @@ Run these scripts sequentially:
 ```bash
 cd ~/Documents/POCs/ArgoCD/knative
 
-./scripts/install-serverless.sh
+# Fresh-cluster safe: installs/reconciles Serverless when needed,
+# restores portable V1 Git state, and creates/reconciles the Argo CD app.
 ./scripts/deploy.sh
 ./scripts/verify.sh
 
@@ -123,7 +130,10 @@ cd ~/Documents/POCs/ArgoCD/knative
 ./scripts/promote-v2.sh
 ```
 
-Wait for each command to finish before running the next one. While
+Wait for each command to finish before running the next one. `deploy.sh`,
+`new-revision.sh`, `split-traffic.sh`, and `promote-v2.sh` require a clean local
+branch exactly matching `origin`, then commit and push their desired-state
+changes before waiting for Argo CD to reconcile the exact commit. While
 `verify.sh --scale-to-zero` is waiting for zero Pods, do not refresh the
 application URL because that traffic keeps the Revision active.
 
@@ -223,17 +233,16 @@ chmod +x scripts/*.sh
 
 ## A. Knative Serving demo
 
-Install Serverless if needed:
-
-```bash
-./scripts/install-serverless.sh
-```
-
-Deploy/reset V1:
+Deploy or reset the portable V1 baseline:
 
 ```bash
 ./scripts/deploy.sh
 ```
+
+On a fresh cluster this command installs/reconciles OpenShift Serverless when
+needed, restores the checked-in `baseline-v1` / `httpd-page-v1` / 100%-latest
+state, creates the Argo CD Application, and waits for the exact Git revision.
+It is also the trusted reset before another V2 presentation.
 
 Verify normal HTTP service:
 
@@ -253,17 +262,28 @@ Create V2 while leaving the main URL on V1:
 ./scripts/new-revision.sh
 ```
 
+The V2 template and a tagged 0% candidate are committed to Git. The script
+proves that the `current` tag serves V1 and the `candidate` tag serves the
+distinct latest Ready V2 Revision before returning.
+
 Apply a native Knative 50/50 split:
 
 ```bash
 ./scripts/split-traffic.sh 50
 ```
 
+The exact V1 and V2 Revision names and percentages are committed to Git before
+Argo CD changes live traffic.
+
 Promote V2 to 100%:
 
 ```bash
 ./scripts/promote-v2.sh
 ```
+
+Promotion fails closed if the tagged candidate is absent; it never falls back
+to an arbitrary `latestReadyRevisionName`. After the demo, run `deploy.sh` to
+restore the portable V1 baseline.
 
 ## B. KEDA companion demo
 
@@ -311,9 +331,15 @@ You can drive individual values manually:
 ./scripts/set-keda-backlog.sh 0
 ```
 
-# Command-by-command execution
+# Low-level API reference (not the GitOps workflow)
 
-The sections below perform the same demo without helper scripts.
+The sections below explain the underlying Knative APIs. They are **not** the
+supported operational workflow once `argocd/application-knative.yaml` is
+active: Argo CD self-heal owns the Knative Service and will revert direct
+`oc patch` changes. Use the scripts above for the GitOps demo. If you
+deliberately experiment imperatively, remove/disable the Knative Argo CD
+Application first and finish by running `./scripts/deploy.sh` to restore the
+Git-managed baseline.
 
 ## 1. Verify access
 
@@ -818,7 +844,8 @@ KEDA handles activation/deactivation between zero and one replica. Above one rep
 
 ## 12. Cleanup
 
-Application-only Knative cleanup:
+Application-only Knative cleanup first removes the Argo CD Application so
+self-heal cannot recreate the Service, then deletes the demo namespace:
 
 ```bash
 ./scripts/cleanup.sh
@@ -844,4 +871,7 @@ Remove Serverless platform too:
 ./scripts/cleanup.sh --platform
 ```
 
-Do not remove shared platform Operators from a cluster used by other workloads.
+`cleanup.sh --platform` now refuses to remove Serverless while any other
+Knative Service exists. On a disposable cluster only, that guard can be
+overridden with `FORCE_PLATFORM_CLEANUP=1`. Do not remove shared platform
+Operators from a cluster used by other workloads.

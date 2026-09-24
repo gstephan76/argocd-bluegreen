@@ -16,7 +16,7 @@ spec:
       initialDelay: 20s
       interval: 10s
       count: 3
-      failureLimit: 1
+      failureLimit: 0
       successCondition: len(result) == 1 && result[0] == 200
       provider:
         prometheus:
@@ -38,7 +38,7 @@ spec:
       initialDelay: 20s
       interval: 10s
       count: 3
-      failureLimit: 1
+      failureLimit: 0
       successCondition: len(result) == 1 && result[0] == 1
       provider:
         prometheus:

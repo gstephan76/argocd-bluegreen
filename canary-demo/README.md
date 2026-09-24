@@ -2,7 +2,12 @@
 
 This demo implements a Prometheus-gated Argo Rollouts canary on OpenShift GitOps.
 
-The rollout advances automatically through 33%, 66%, and 100% only after each inline AnalysisRun succeeds. After the 100% HTTP-200 gate succeeds, the Rollout pauses for one explicit operator approval before the candidate ReplicaSet is declared stable.
+The committed baseline is BLUE with marker `baseline-blue`. A YELLOW scenario is
+created only after the scripts prove that Git, Argo CD, and the live Rollout are
+all on that settled baseline. The rollout then advances automatically through
+33%, 66%, and 100% only after each inline AnalysisRun succeeds. After the 100%
+gate succeeds, the Rollout pauses for one explicit operator approval before the
+candidate ReplicaSet is declared stable.
 
 No second OpenShift Route is created. The existing public Route remains the user-facing application Route.
 
@@ -104,14 +109,15 @@ probe_success 1
 
 Argo Rollouts does not generate the application traffic. Its AnalysisRun queries Prometheus/Thanos every ten seconds and evaluates the metrics collected by Prometheus.
 
-The AnalysisTemplate requires three successful measurements for both:
+The AnalysisTemplate requires all three measurements to succeed for both:
 
 ```text
 probe_http_status_code == 200
 probe_success == 1
 ```
 
-With `failureLimit: 1`, a failed measurement causes that analysis to fail and the rollout does not advance to the next weight.
+With `failureLimit: 0`, the first failed measurement fails that metric. Therefore
+all three measurements for both metrics must succeed before the rollout advances.
 
 ## Why the internal canary Service is used
 
@@ -147,6 +153,7 @@ Run the Canary workflow here, in this exact order:
 cd ~/Documents/POCs/ArgoCD
 
 bash scripts/deploy-canary-demo.sh
+bash scripts/prepare-canary-blue.sh
 bash scripts/start-canary-yellow.sh
 
 # Wait until the script reaches the final manual pause at step 6/7.
@@ -208,24 +215,45 @@ cd ~/Documents/POCs/ArgoCD
 bash scripts/deploy-canary-demo.sh
 ```
 
-### 2. Start a fresh canary revision
+This command bootstraps the RolloutManager and monitoring dependencies when
+needed, creates/reconciles the Argo CD Application, and waits for the exact Git
+revision. It does not treat an arbitrary scenario state as the presentation
+baseline.
+
+### 2. Establish the canonical BLUE baseline
+
+```bash
+bash scripts/prepare-canary-blue.sh
+```
+
+This is the trusted reset/recovery command. It restores `:blue` plus
+`baseline-blue` in Git, bootstraps a missing Application through
+`deploy-canary-demo.sh`, and may use `oc argo rollouts promote --full` only
+after the live desired state is proven to be that exact canonical BLUE state.
+It returns only when the Rollout is `Healthy` with `stableRS == currentPodHash`.
+
+### 3. Start a fresh YELLOW canary revision
 
 ```bash
 bash scripts/start-canary-yellow.sh
 ```
 
-The script creates a new Git-managed pod-template revision and waits while the rollout progresses automatically:
+The script refuses to mutate Git unless the cluster is on the settled BLUE
+baseline and Argo CD is synchronized to the current Git HEAD. It creates a
+fresh Git-managed YELLOW pod-template revision and waits while the rollout
+progresses automatically:
 
 ```text
-33% -> HTTP-200 analysis
-66% -> HTTP-200 analysis
-100% -> HTTP-200 analysis
+33% -> 3/3 successful Prometheus measurements
+66% -> 3/3 successful Prometheus measurements
+100% -> 3/3 successful Prometheus measurements
 step 6/7 -> final pause
 ```
 
-No manual action is required between 33%, 66%, and 100%.
+Before returning, it binds the successful AnalysisRuns at steps 1, 3, and 5 to
+the current Rollout revision and `currentPodHash`.
 
-### 3. Final operator approval
+### 4. Final operator approval
 
 After the script reports that all three Prometheus gates passed:
 
@@ -233,7 +261,9 @@ After the script reports that all three Prometheus gates passed:
 bash scripts/promote-canary-stable.sh
 ```
 
-This is the only manual approval in the rollout.
+Promotion is bound to clean/synchronized Git, exact Argo CD HEAD, the YELLOW
+candidate hash, final step `6`, and the three successful AnalysisRuns belonging
+to that candidate. This is the only manual approval in the rollout.
 
 ## Manual demo without helper scripts
 
@@ -589,6 +619,7 @@ Scripted execution:
 
 ```bash
 bash scripts/deploy-canary-demo.sh
+bash scripts/prepare-canary-blue.sh
 bash scripts/start-canary-yellow.sh
 bash scripts/promote-canary-stable.sh
 ```

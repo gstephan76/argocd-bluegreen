@@ -1,0 +1,21 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: knative-httpd-demo
+  namespace: openshift-gitops
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/gstephan76/argocd-bluegreen.git
+    targetRevision: main
+    path: knative/app
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: knative-httpd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ApplyOutOfSyncOnly=true
