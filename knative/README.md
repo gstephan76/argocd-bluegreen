@@ -875,3 +875,52 @@ Remove Serverless platform too:
 Knative Service exists. On a disposable cluster only, that guard can be
 overridden with `FORCE_PLATFORM_CLEANUP=1`. Do not remove shared platform
 Operators from a cluster used by other workloads.
+
+
+
+############### SIMPLE DEMO #####################
+
+oc get knativeserving knative-serving -n knative-serving -o yaml | grep -A 15 conditions
+oc get po -n knative-serving
+oc get po -n knative-serving-ingress
+oc project knative-serving-demo
+
+kn service create greeter --image quay.io/rhdevelopers/knative-tutorial-greeter:quarkus --port=8080
+kn service list
+kn revision list
+kn routes list
+oc tree ksvc greeter
+kn service create greeter-offline --image quay.io/rhdevelopers/knative-tutorial-greeter:quarkus --target ./ --namespace knative-serving-demo
+oc apply -f ~/Documents/POCs/ArgoCD/knative/knative-serving-demo/ksvc
+kn service update greeter-offline --cluster-local
+
+
+kn route list
+kn service delete greeter-offline 
+
+oc get configmap config-autoscaler -n knative-serving -o yaml
+kn service update greeter --concurrency-limit 1 --scale-window=10s
+kn revision list
+ROUTE=$(oc get ksvc | grep greeter | awk 'NR=1 {print $2}')
+fortio load -t 20s -c 10 -qps 40 -timeout 10000ms $ROUTE
+
+kn service update greeter --scale-max 10 --annotation autoscaling.knative.dev/metric=rps --scale-target 1 --scale-window=10s
+
+
+kn service update greeter --traffic greeter-00003=100 # pinning the traffic
+kn service list
+
+kn service update greeter --env version=GREEN --revision-name=green-revision # In production it  would be another container image
+kn revision list
+
+kn service update greeter --tag @latest=green # The tag created a new route specific to the revision -> show in the GUI
+kn revision list
+kn routes list
+oc get routes -n knative-serving-ingress
+
+
+kn service update greeter --traffic green=20,greeter-00003=80 
+kn revisions list
+fortio load -t 10s -c 1 -qps 5 -timeout 10000ms $ROUTE
+
+
