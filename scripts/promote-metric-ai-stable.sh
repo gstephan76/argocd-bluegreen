@@ -40,7 +40,13 @@ desired_marker="$(
   awk -F'"' '/demo-rollout-revision:/ {print $2; exit}' "$ROLLOUT_FILE"
 )"
 desired_template="$(
-  awk '/templateName:[[:space:]]+metric-ai-analysis/ {print $2; exit}' "$ROLLOUT_FILE"
+  awk '
+    /templateName:[[:space:]]+metric-ai-analysis/ {
+      for (i = 1; i <= NF; i++) {
+        if ($i == "templateName:") { print $(i + 1); exit }
+      }
+    }
+  ' "$ROLLOUT_FILE"
 )"
 
 [[ "$desired_image" == "$HEALTHY_IMAGE" ]] || \
