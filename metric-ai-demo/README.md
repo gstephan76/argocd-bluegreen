@@ -173,6 +173,41 @@ Terminal 1 — presenter:
 ./scripts/run-metric-ai-demo.sh analysis
 ```
 
+#### OR Better yet:
+cd ~/Documents/POCs/ArgoCD
+
+# Initial preparation / validation
+./scripts/run-metric-ai-demo.sh prepare
+
+# 1. Healthy canary
+./scripts/run-metric-ai-demo.sh healthy
+
+# AI approved it; human promotion
+./scripts/run-metric-ai-demo.sh promote
+
+# 2. Failure demonstration
+./scripts/run-metric-ai-demo.sh failure
+
+# Inspect the rejected AnalysisRun while it is still present
+./scripts/run-metric-ai-demo.sh analysis
+
+# REQUIRED before another scenario
+./scripts/run-metric-ai-demo.sh reset
+
+# 3. Auto-fix demonstration
+export GITHUB_TOKEN='...'
+./scripts/run-metric-ai-demo.sh autofix
+
+# Optional: inspect the AnalysisRun that caused remediation
+./scripts/run-metric-ai-demo.sh analysis
+
+# Return to canonical baseline before cleanup / another run
+./scripts/run-metric-ai-demo.sh reset
+
+# Optional presentation/history cleanup
+./scripts/run-metric-ai-demo.sh clean-history
+
+
 The scenario commands use lightweight state guards by default. To request the
 complete robust validation/reconciliation pass before a scenario, add
 `--preflight`:
