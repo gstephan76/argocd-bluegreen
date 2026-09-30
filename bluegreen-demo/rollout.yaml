@@ -18,13 +18,13 @@ spec:
       annotations:
         # Stable identity for the trusted BLUE recovery point. Scenario scripts
         # replace this with a unique marker for every fresh GREEN attempt.
-        demo-rollout-revision: "baseline-blue"
+        demo-rollout-revision: "bluegreen-green-20260930T212824Z-2427821"
     spec:
       containers:
         - name: rollouts-demo
           # Initial stable version (BLUE).
           # switch-green.sh changes this tag and revision marker declaratively.
-          image: argoproj/rollouts-demo:blue
+          image: argoproj/rollouts-demo:green
           imagePullPolicy: Always
           ports:
             - name: http
@@ -65,7 +65,7 @@ spec:
           - name: preview-url
             value: http://bluegreen-demo-preview.bluegreen-demo.svc.cluster.local
           - name: expected-color
-            value: blue
+            value: green
 
       # After promotion, validate the candidate through the ACTIVE Service.
       # A failed/error post-promotion AnalysisRun causes Argo Rollouts to
@@ -77,7 +77,7 @@ spec:
           - name: active-url
             value: http://bluegreen-demo-active.bluegreen-demo.svc.cluster.local
           - name: expected-color
-            value: blue
+            value: green
 
       # Manual gate remains after successful pre-promotion analysis.
       autoPromotionEnabled: false
