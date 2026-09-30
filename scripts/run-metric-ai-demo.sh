@@ -193,7 +193,7 @@ Presentation:
   controller-logs   Follow metric-ai / Argo Rollouts controller logs.
 
 Cleanup:
-  clean-history     Clear AI/dashboard presentation history only.
+  clean-history     Clear AI/dashboard history and GitHub auto-fix PR state.
   cleanup           Remove demo workload and isolated agent.
   cleanup-platform  Also remove the metric provider from RolloutManager.
 EOF

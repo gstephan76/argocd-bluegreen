@@ -354,6 +354,11 @@ operation, restarts the AI agent so it can consume it, and restores the
 previous Secret state on success, timeout, or error. Review and merge of the
 generated pull request remain manual.
 
+The same fine-grained PAT is used by `clean-history`. It needs **Pull requests:
+Read and write** and **Contents: Read and write** on only
+`gstephan76/argo-rollouts-quarkus-demo` so the cleanup can close generated PRs
+and delete their generated branches.
+
 Do not replace `metric-ai-github-bootstrap` in Git with a real token. The
 checked-in value remains deliberately inert.
 
@@ -372,11 +377,19 @@ live desired state is exactly `v1.stable` with marker `baseline-v1`, reset fully
 promotes that canonical baseline while skipping canary pauses and AI analysis.
 It then runs the robust pre-flight against the recovered baseline.
 
-Clear only presentation history while keeping the demo installed:
+Clear presentation history and the GitHub auto-fix working state while
+keeping the demo installed:
 
 ```bash
+export GITHUB_TOKEN='...'
 ./scripts/run-metric-ai-demo.sh clean-history
 ```
+
+`clean-history` closes only PRs that contain the Kubernetes AI Agent generated
+PR marker, target `main`, and use the `fix/k8s-issue-*` head-branch convention.
+It then deletes those generated branches. Unrelated PRs such as Dependabot PRs
+are not modified. GitHub does not support deleting pull-request records, so
+closed or merged PR records remain visible in repository history.
 
 Delete the demo workload and isolated agent while leaving the shared metric
 plugin installed:
