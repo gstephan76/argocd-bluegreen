@@ -58,7 +58,7 @@ headers = {
 }
 
 
-def api(method, path, payload=None, allow_404=False):
+def api(method, path, payload=None, allow_missing_ref=False):
     data = None if payload is None else json.dumps(payload).encode("utf-8")
     req = request.Request(
         api_base + path,
@@ -74,8 +74,18 @@ def api(method, path, payload=None, allow_404=False):
             return response.status, value
     except error.HTTPError as exc:
         raw = exc.read().decode("utf-8", errors="replace").strip()
-        if allow_404 and exc.code == 404:
-            return 404, None
+        if allow_missing_ref:
+            if exc.code == 404:
+                return 404, None
+
+            if exc.code == 422:
+                try:
+                    detail = json.loads(raw)
+                except json.JSONDecodeError:
+                    detail = {}
+
+                if detail.get("message") == "Reference does not exist":
+                    return 404, None
         print(
             f"ERROR: GitHub API {method} {path} failed: "
             f"HTTP {exc.code}: {raw}",
@@ -161,7 +171,7 @@ for pr in candidates:
     status, _ = api(
         "DELETE",
         f"/repos/{repo}/git/refs/heads/{encoded_ref}",
-        allow_404=True,
+        allow_missing_ref=True,
     )
 
     if status == 204:
