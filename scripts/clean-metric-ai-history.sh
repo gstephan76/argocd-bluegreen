@@ -126,10 +126,14 @@ if not candidates:
     print("    no Kubernetes AI Agent auto-fix pull requests found")
     raise SystemExit(0)
 
-for pr in sorted(candidates, key=lambda item: item["number"]):
+candidates = sorted(candidates, key=lambda item: item["number"])
+
+# Close every active Metric-AI PR before cleaning any branch.  This keeps a
+# stale historical branch from preventing the current demo PR from being
+# closed.
+for pr in candidates:
     number = pr["number"]
     state = pr.get("state") or "unknown"
-    merged = bool(pr.get("merged_at"))
     head_ref = (pr.get("head") or {}).get("ref") or ""
 
     if state == "open":
@@ -139,7 +143,16 @@ for pr in sorted(candidates, key=lambda item: item["number"]):
             f"/repos/{repo}/pulls/{number}",
             {"state": "closed"},
         )
-    elif merged:
+        pr["state"] = "closed"
+
+# Only after all matching open PRs are closed do we clean generated branches.
+for pr in candidates:
+    number = pr["number"]
+    state = pr.get("state") or "unknown"
+    merged = bool(pr.get("merged_at"))
+    head_ref = (pr.get("head") or {}).get("ref") or ""
+
+    if merged:
         print(f"    PR #{number} already merged; cleaning branch {head_ref}")
     else:
         print(f"    PR #{number} already {state}; cleaning branch {head_ref}")
