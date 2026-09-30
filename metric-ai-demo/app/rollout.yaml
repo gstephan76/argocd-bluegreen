@@ -72,5 +72,5 @@ spec:
         - analysis:
             templates:
               - templateName: metric-ai-analysis
-        - pause: {}
         - setWeight: 100
+        - pause: {}
