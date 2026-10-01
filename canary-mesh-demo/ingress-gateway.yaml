@@ -30,6 +30,7 @@ spec:
         inject.istio.io/templates: gateway
       labels:
         istio: ingressgateway
+        app.kubernetes.io/component: rollouts-mesh-canary-ingressgateway
         sidecar.istio.io/inject: "true"
     spec:
       containers:

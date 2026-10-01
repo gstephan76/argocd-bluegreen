@@ -73,8 +73,11 @@ istio-injection=enabled
 ```
 
 The demo owns a dedicated Sail-injected ingress gateway and OpenShift Route in
-`rollouts-mesh-canary-demo`; it does not discover or modify another
-application's gateway.
+`rollouts-mesh-canary-demo`. Its ingress pod carries
+`app.kubernetes.io/component=rollouts-mesh-canary-ingressgateway`, and the
+Istio `Gateway` requires that label in addition to `istio=ingressgateway`.
+This compound selector prevents wildcard `*:8080` Gateways in other namespaces
+from selecting the same ingress workload and avoids Kiali `KIA0301` collisions.
 
 ## Demo flow
 

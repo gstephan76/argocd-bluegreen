@@ -3,6 +3,7 @@ set -Eeuo pipefail
 NAMESPACE="${NAMESPACE:-rollouts-mesh-canary-demo}"
 APP_NAME="${APP_NAME:-rollouts-mesh-canary-demo}"
 BLACKBOX_APP="${BLACKBOX_APP:-rollouts-mesh-canary-blackbox}"
+GATEWAY_COMPONENT="${GATEWAY_COMPONENT:-rollouts-mesh-canary-ingressgateway}"
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-300}"
 POLL_SECONDS="${POLL_SECONDS:-5}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -46,6 +47,12 @@ while (( SECONDS < deadline )); do
 done
 (( SECONDS < deadline )) || die "Timed out waiting for mesh data-plane resources"
 pass "Required mesh routing and monitoring resources exist"
+
+gateway_component="$(oc get gateway.networking.istio.io rollouts-mesh-canary-gateway -n "$NAMESPACE" -o json |
+  jq -r '.spec.selector["app.kubernetes.io/component"] // ""')"
+[[ "$gateway_component" == "$GATEWAY_COMPONENT" ]] ||
+  die "Gateway selector is not isolated: expected app.kubernetes.io/component=${GATEWAY_COMPONENT}, got ${gateway_component:-<missing>}"
+pass "Gateway selector is isolated to component=${GATEWAY_COMPONENT}"
 
 check_selector_sidecars() {
   local selector="$1" label="$2" json total classic_proxy native_proxy with_proxy ready_with_proxy
@@ -104,7 +111,7 @@ while (( SECONDS < deadline )); do
   app_ok=0; blackbox_ok=0; gateway_ok=0
   check_selector_sidecars "app=${APP_NAME}" "rollout pods" && app_ok=1 || true
   check_selector_sidecars "app=${BLACKBOX_APP}" "blackbox" && blackbox_ok=1 || true
-  check_selector_sidecars "istio=ingressgateway" "ingress gateway" && gateway_ok=1 || true
+  check_selector_sidecars "istio=ingressgateway,app.kubernetes.io/component=${GATEWAY_COMPONENT}" "ingress gateway" && gateway_ok=1 || true
   (( app_ok && blackbox_ok && gateway_ok )) && break
   sleep "$POLL_SECONDS"
 done
