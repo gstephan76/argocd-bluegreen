@@ -20,6 +20,36 @@ cd "$ROOT"
 oc whoami >/dev/null 2>&1 || die "Not logged in to OpenShift"
 oc argo rollouts version >/dev/null 2>&1 || die "Argo Rollouts CLI plugin is required"
 
+echo "==> Verifying OpenShift Service Mesh 3.4+ prerequisite"
+bash scripts/check-canary-mesh-prereqs.sh
+
+required_mesh_assets=(
+  argocd/application-canary-mesh.yaml
+  bootstrap/canary-mesh-prometheus-access.yaml
+  canary-mesh-demo/kustomization.yaml
+  canary-mesh-demo/ingress-gateway.yaml
+  canary-mesh-demo/gateway.yaml
+  canary-mesh-demo/virtualservice.yaml
+  canary-mesh-demo/route.yaml
+  canary-mesh-demo/service-stable.yaml
+  canary-mesh-demo/service-canary.yaml
+  canary-mesh-demo/analysis-template.yaml
+  canary-mesh-demo/rollout.yaml
+  scripts/check-canary-mesh-prereqs.sh
+  scripts/deploy-canary-mesh-demo.sh
+)
+for asset in "${required_mesh_assets[@]}"; do
+  git ls-files --error-unmatch "$asset" >/dev/null 2>&1 ||     die "Required mesh demo asset is not tracked in Git: $asset"
+done
+
+mesh_status="$(
+  git status --porcelain --untracked-files=all --     argocd/application-canary-mesh.yaml     bootstrap/canary-mesh-prometheus-access.yaml     canary-mesh-demo     scripts/check-canary-mesh-prereqs.sh     scripts/deploy-canary-mesh-demo.sh     scripts/prepare-canary-mesh-blue.sh     scripts/start-canary-mesh-yellow.sh     scripts/promote-canary-mesh-stable.sh     scripts/sample-canary-mesh-traffic.sh
+)"
+if [[ -n "$mesh_status" ]]; then
+  printf '%s\n' "$mesh_status" >&2
+  die "Mesh demo files must be committed before prepare mutates rollout.yaml"
+fi
+
 if ! git diff --quiet || ! git diff --cached --quiet; then
   die "Tracked Git changes exist"
 fi

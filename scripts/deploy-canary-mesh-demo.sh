@@ -7,9 +7,8 @@ APP_NAME="${APP_NAME:-rollouts-mesh-canary-demo}"
 ANALYSIS_TEMPLATE="${ANALYSIS_TEMPLATE:-rollouts-mesh-canary-prometheus}"
 ROLLOUT_MANAGER="${ROLLOUT_MANAGER:-argo-rollout}"
 ROLLOUT_MANAGER_NAMESPACE="${ROLLOUT_MANAGER_NAMESPACE:-openshift-gitops}"
-ISTIO_REVISION="${ISTIO_REVISION:-default}"
-MESH_INGRESS_NAMESPACE="${MESH_INGRESS_NAMESPACE:-}"
-MESH_INGRESS_SERVICE="${MESH_INGRESS_SERVICE:-}"
+MESH_INGRESS_NAMESPACE="${MESH_INGRESS_NAMESPACE:-$NAMESPACE}"
+MESH_INGRESS_SERVICE="${MESH_INGRESS_SERVICE:-istio-ingressgateway}"
 ROUTE_NAME="${ROUTE_NAME:-rollouts-mesh-canary-demo}"
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-300}"
 MONITORING_TIMEOUT_SECONDS="${MONITORING_TIMEOUT_SECONDS:-600}"
@@ -36,6 +35,9 @@ desired_revision="$(git rev-parse HEAD)"
 oc whoami >/dev/null 2>&1 || die "Not logged in to OpenShift"
 oc argo rollouts version >/dev/null 2>&1 || die "Argo Rollouts CLI plugin is required"
 
+echo "==> Verifying OpenShift Service Mesh 3.4+ prerequisite"
+bash scripts/check-canary-mesh-prereqs.sh
+
 for crd in \
   applications.argoproj.io \
   rollouts.argoproj.io \
@@ -56,14 +58,10 @@ done
 [[ -f argocd/application-canary-mesh.yaml ]] || \
   die "argocd/application-canary-mesh.yaml not found"
 
-echo "==> Ensuring namespace ${NAMESPACE} exists and is enrolled in Istio revision ${ISTIO_REVISION}"
+echo "==> Ensuring namespace ${NAMESPACE} exists and is enrolled in the OSSM 3.4+ mesh"
 oc get namespace "$NAMESPACE" >/dev/null 2>&1 || oc create namespace "$NAMESPACE"
-oc label namespace "$NAMESPACE" "istio.io/rev=${ISTIO_REVISION}" --overwrite
-
-# Avoid ambiguous injection labels. OSSM 3 uses revision labels/tags; the
-# default revision tag is typically named 'default'. Override ISTIO_REVISION
-# when the cluster uses another revision or tag.
-oc label namespace "$NAMESPACE" istio-injection- >/dev/null 2>&1 || true
+oc label namespace "$NAMESPACE" istio-discovery=enabled istio-injection=enabled --overwrite
+oc label namespace "$NAMESPACE" istio.io/rev- >/dev/null 2>&1 || true
 
 echo "==> Ensuring OpenShift user-workload monitoring is enabled"
 existing_monitoring_config="$(
@@ -139,11 +137,13 @@ done
 
 echo "==> Waiting for mesh canary resources"
 oc rollout status deployment/rollouts-mesh-canary-blackbox -n "$NAMESPACE" --timeout="${TIMEOUT_SECONDS}s"
+oc rollout status deployment/istio-ingressgateway -n "$MESH_INGRESS_NAMESPACE" --timeout="${TIMEOUT_SECONDS}s"
 deadline=$((SECONDS + TIMEOUT_SECONDS))
 while (( SECONDS < deadline )); do
   oc get rollout "$APP_NAME" -n "$NAMESPACE" >/dev/null 2>&1 && \
   oc get virtualservice rollouts-mesh-canary -n "$NAMESPACE" >/dev/null 2>&1 && \
   oc get gateway rollouts-mesh-canary-gateway -n "$NAMESPACE" >/dev/null 2>&1 && \
+  oc get route "$ROUTE_NAME" -n "$MESH_INGRESS_NAMESPACE" >/dev/null 2>&1 && \
   oc get analysistemplate "$ANALYSIS_TEMPLATE" -n "$NAMESPACE" >/dev/null 2>&1 && break
   sleep "$POLL_SECONDS"
 done
@@ -157,52 +157,13 @@ oc wait --for=condition=Ready pod \
 pod="$(oc get pod -n "$NAMESPACE" -l app="$APP_NAME" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
 containers="$(oc get pod "$pod" -n "$NAMESPACE" -o jsonpath='{.spec.containers[*].name}' 2>/dev/null || true)"
 if [[ " $containers " != *" istio-proxy "* ]]; then
-  die "Application pods are not sidecar-injected. Verify ISTIO_REVISION=${ISTIO_REVISION} or the mesh namespace-enrollment policy."
+  die "Application pods are not sidecar-injected. Verify the istio-discovery/istio-injection namespace labels and the OSSM control plane."
 fi
 
-echo "==> Discovering the OpenShift Service Mesh ingress gateway Service"
-if [[ -z "$MESH_INGRESS_NAMESPACE" || -z "$MESH_INGRESS_SERVICE" ]]; then
-  mapfile -t gateways < <(
-    oc get service -A -l istio=ingressgateway \
-      -o jsonpath='{range .items[*]}{.metadata.namespace}{"|"}{.metadata.name}{"\n"}{end}' 2>/dev/null || true
-  )
+echo "==> Verifying the dedicated demo ingress gateway and Route"
+oc get service "$MESH_INGRESS_SERVICE" -n "$MESH_INGRESS_NAMESPACE" >/dev/null 2>&1 || die "Ingress gateway Service ${MESH_INGRESS_NAMESPACE}/${MESH_INGRESS_SERVICE} not found"
 
-  if (( ${#gateways[@]} == 0 )); then
-    mapfile -t gateways < <(
-      oc get service -A \
-        -o jsonpath='{range .items[*]}{.metadata.namespace}{"|"}{.metadata.name}{"\n"}{end}' 2>/dev/null |
-      grep -E '(^|\|)(istio-)?ingressgateway$' || true
-    )
-  fi
-
-  if (( ${#gateways[@]} == 1 )); then
-    IFS='|' read -r MESH_INGRESS_NAMESPACE MESH_INGRESS_SERVICE <<<"${gateways[0]}"
-  elif (( ${#gateways[@]} == 0 )); then
-    die "No Istio ingress gateway Service was found. Set MESH_INGRESS_NAMESPACE and MESH_INGRESS_SERVICE explicitly."
-  else
-    printf 'Found multiple ingress gateways:\n' >&2
-    printf '  %s\n' "${gateways[@]}" >&2
-    die "Set MESH_INGRESS_NAMESPACE and MESH_INGRESS_SERVICE to select one gateway."
-  fi
-fi
-
-oc get service "$MESH_INGRESS_SERVICE" -n "$MESH_INGRESS_NAMESPACE" >/dev/null 2>&1 || \
-  die "Ingress gateway Service ${MESH_INGRESS_NAMESPACE}/${MESH_INGRESS_SERVICE} not found"
-
-gateway_port="$(
-  oc get service "$MESH_INGRESS_SERVICE" -n "$MESH_INGRESS_NAMESPACE" \
-    -o jsonpath='{range .spec.ports[*]}{.port}{"|"}{.name}{"\n"}{end}' |
-  awk -F'|' '$1 == "80" {print $2; exit}'
-)"
-[[ -n "$gateway_port" ]] || die "Ingress gateway Service has no named port 80"
-
-echo "==> Exposing the Istio ingress gateway through an OpenShift Route"
-oc create route edge "$ROUTE_NAME" \
-  -n "$MESH_INGRESS_NAMESPACE" \
-  --service="$MESH_INGRESS_SERVICE" \
-  --port="$gateway_port" \
-  --insecure-policy=Redirect \
-  --dry-run=client -o yaml | oc apply -f -
+oc get route "$ROUTE_NAME" -n "$MESH_INGRESS_NAMESPACE" >/dev/null 2>&1 || die "Route ${MESH_INGRESS_NAMESPACE}/${ROUTE_NAME} not found"
 
 host="$(oc get route "$ROUTE_NAME" -n "$MESH_INGRESS_NAMESPACE" -o jsonpath='{.spec.host}')"
 [[ -n "$host" ]] || die "Route host is empty"
@@ -222,5 +183,5 @@ oc argo rollouts get rollout "$APP_NAME" -n "$NAMESPACE"
 echo
 echo "Mesh canary reconciliation complete: https://${host}"
 echo "Istio ingress: ${MESH_INGRESS_NAMESPACE}/${MESH_INGRESS_SERVICE}"
-echo "Namespace injection revision/tag: ${ISTIO_REVISION}"
+echo "Namespace mesh enrollment: istio-discovery=enabled, istio-injection=enabled"
 echo "Next: bash scripts/prepare-canary-mesh-blue.sh"

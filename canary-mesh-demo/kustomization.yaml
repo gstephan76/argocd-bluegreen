@@ -8,6 +8,8 @@ resources:
   - servicemonitor-blackbox.yaml
   - service-stable.yaml
   - service-canary.yaml
+  - ingress-gateway.yaml
   - gateway.yaml
   - virtualservice.yaml
+  - route.yaml
   - rollout.yaml

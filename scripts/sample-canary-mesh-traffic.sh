@@ -3,7 +3,7 @@ set -Eeuo pipefail
 
 NAMESPACE="${NAMESPACE:-rollouts-mesh-canary-demo}"
 ROUTE_NAME="${ROUTE_NAME:-rollouts-mesh-canary-demo}"
-MESH_INGRESS_NAMESPACE="${MESH_INGRESS_NAMESPACE:-}"
+MESH_INGRESS_NAMESPACE="${MESH_INGRESS_NAMESPACE:-$NAMESPACE}"
 REQUESTS="${REQUESTS:-100}"
 
 die(){ echo "ERROR: $*" >&2; exit 1; }

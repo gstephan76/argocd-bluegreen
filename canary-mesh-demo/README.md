@@ -49,25 +49,39 @@ VirtualService -> weighted stable/canary Services.
 
 ## Prerequisites
 
+OpenShift Service Mesh is a prerequisite for this demo; the demo never installs
+or reconciles the Service Mesh control plane.
+
+The validated baseline matches the repository `gstephan76/SM` under
+`v3/v3.4`:
+
+- OpenShift Service Mesh **3.4 or newer**.
+- Sail `Istio/default` Ready in namespace `istio-system`, with
+  `spec.namespace: istio-system`.
+- Sail `IstioCNI/default` Ready in namespace `istio-cni`.
+- The mesh discovery selector accepts namespaces labeled
+  `istio-discovery=enabled`.
 - OpenShift GitOps with Argo Rollouts and the `oc argo rollouts` CLI plugin.
-- OpenShift Service Mesh 3 with the Istio `Gateway` and `VirtualService` CRDs.
-- An Istio ingress gateway Service reachable by an OpenShift Route.
 - OpenShift user-workload monitoring.
-- A namespace injection revision/tag. The scripts default to `default`; set
-  `ISTIO_REVISION` when the cluster uses another revision or revision tag.
 
-If more than one ingress gateway exists, set both:
+The demo namespace is enrolled using the same sidecar-mode contract as the
+Service Mesh repository:
 
-```bash
-export MESH_INGRESS_NAMESPACE=<gateway-namespace>
-export MESH_INGRESS_SERVICE=<gateway-service>
+```text
+istio-discovery=enabled
+istio-injection=enabled
 ```
+
+The demo owns a dedicated Sail-injected ingress gateway and OpenShift Route in
+`rollouts-mesh-canary-demo`; it does not discover or modify another
+application's gateway.
 
 ## Demo flow
 
 From the repository root:
 
 ```bash
+bash scripts/check-canary-mesh-prereqs.sh
 bash scripts/deploy-canary-mesh-demo.sh
 bash scripts/prepare-canary-mesh-blue.sh
 bash scripts/start-canary-mesh-yellow.sh
