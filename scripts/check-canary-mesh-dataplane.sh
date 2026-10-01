@@ -48,13 +48,53 @@ done
 pass "Required mesh routing and monitoring resources exist"
 
 check_selector_sidecars() {
-  local selector="$1" label="$2" json total with_proxy ready_with_proxy
+  local selector="$1" label="$2" json total classic_proxy native_proxy with_proxy ready_with_proxy
   json="$(oc get pods -n "$NAMESPACE" -l "$selector" -o json 2>/dev/null || true)"
   [[ -n "$json" ]] || return 1
+
   total="$(jq '[.items[] | select(.metadata.deletionTimestamp == null)] | length' <<<"$json")"
-  with_proxy="$(jq '[.items[] | select(.metadata.deletionTimestamp == null) | select(any(.spec.containers[]?; .name == "istio-proxy"))] | length' <<<"$json")"
-  ready_with_proxy="$(jq '[.items[] | select(.metadata.deletionTimestamp == null) | select(any(.spec.containers[]?; .name == "istio-proxy")) | select(([.status.containerStatuses[]? | select(.name == "istio-proxy" and .ready == true)] | length) == 1)] | length' <<<"$json")"
-  printf '    %-20s total=%s sidecar=%s sidecar-ready=%s\n' "$label" "$total" "$with_proxy" "$ready_with_proxy"
+
+  classic_proxy="$(
+    jq '[.items[] |
+      select(.metadata.deletionTimestamp == null) |
+      select(any(.spec.containers[]?; .name == "istio-proxy"))
+    ] | length' <<<"$json"
+  )"
+
+  native_proxy="$(
+    jq '[.items[] |
+      select(.metadata.deletionTimestamp == null) |
+      select(any(.spec.initContainers[]?;
+        .name == "istio-proxy" and .restartPolicy == "Always"))
+    ] | length' <<<"$json"
+  )"
+
+  with_proxy="$(
+    jq '[.items[] |
+      select(.metadata.deletionTimestamp == null) |
+      select(
+        any(.spec.containers[]?; .name == "istio-proxy") or
+        any(.spec.initContainers[]?;
+          .name == "istio-proxy" and .restartPolicy == "Always")
+      )
+    ] | length' <<<"$json"
+  )"
+
+  ready_with_proxy="$(
+    jq '[.items[] |
+      select(.metadata.deletionTimestamp == null) |
+      select(
+        any(.status.containerStatuses[]?;
+          .name == "istio-proxy" and .ready == true) or
+        any(.status.initContainerStatuses[]?;
+          .name == "istio-proxy" and .ready == true)
+      )
+    ] | length' <<<"$json"
+  )"
+
+  printf '    %-20s total=%s classic=%s native=%s proxy-ready=%s\n' \
+    "$label" "$total" "$classic_proxy" "$native_proxy" "$ready_with_proxy"
+
   (( total > 0 && with_proxy == total && ready_with_proxy == total ))
 }
 
@@ -70,7 +110,10 @@ while (( SECONDS < deadline )); do
 done
 if ! (( app_ok && blackbox_ok && gateway_ok )); then
   echo "Pods still missing a Ready istio-proxy:" >&2
-  oc get pods -n "$NAMESPACE" -o custom-columns='NAME:.metadata.name,READY:.status.containerStatuses[*].ready,CONTAINERS:.spec.containers[*].name' >&2 || true
+  oc get pods -n "$NAMESPACE" \
+    -o custom-columns='NAME:.metadata.name,READY:.status.containerStatuses[*].ready,CONTAINERS:.spec.containers[*].name,INIT-CONTAINERS:.spec.initContainers[*].name' \
+    >&2 || true
+  echo "Note: OSSM/Istio native sidecars appear under initContainers with restartPolicy=Always." >&2
   die "Service Mesh data plane is incomplete; refusing to continue without sidecars"
 fi
 pass "All active mesh-demo workloads have Ready Istio proxies"
