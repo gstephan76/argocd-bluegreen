@@ -21,6 +21,12 @@ ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 [[ -n "$ROOT" ]] || die "Run inside the repository"
 cd "$ROOT"
 
+[[ -f scripts/check-canary-mesh-prereqs.sh ]] || \
+  die "scripts/check-canary-mesh-prereqs.sh not found"
+
+echo "==> Verifying OpenShift Service Mesh 3.4+ prerequisite"
+bash scripts/check-canary-mesh-prereqs.sh
+
 if ! git diff --quiet || ! git diff --cached --quiet; then
   die "Tracked Git changes exist"
 fi
@@ -34,9 +40,6 @@ desired_revision="$(git rev-parse HEAD)"
 
 oc whoami >/dev/null 2>&1 || die "Not logged in to OpenShift"
 oc argo rollouts version >/dev/null 2>&1 || die "Argo Rollouts CLI plugin is required"
-
-echo "==> Verifying OpenShift Service Mesh 3.4+ prerequisite"
-bash scripts/check-canary-mesh-prereqs.sh
 
 for crd in \
   applications.argoproj.io \
