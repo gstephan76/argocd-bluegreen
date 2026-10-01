@@ -6,6 +6,7 @@ resources:
   - blackbox-deployment.yaml
   - blackbox-service.yaml
   - servicemonitor-blackbox.yaml
+  - podmonitor-istio-proxies.yaml
   - service-stable.yaml
   - service-canary.yaml
   - ingress-gateway.yaml

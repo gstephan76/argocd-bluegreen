@@ -14,6 +14,11 @@ for c in oc awk sort jq; do
   command -v "$c" >/dev/null 2>&1 || die "$c not found"
 done
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib-canary-mesh.sh
+source "${SCRIPT_DIR}/lib-canary-mesh.sh"
+mesh_install_wrappers
+
 oc whoami >/dev/null 2>&1 || die "Not logged in to OpenShift"
 
 for crd in \

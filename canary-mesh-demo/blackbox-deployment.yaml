@@ -12,6 +12,7 @@ spec:
     metadata:
       labels:
         app: rollouts-mesh-canary-blackbox
+        sidecar.istio.io/inject: "true"
     spec:
       containers:
         - name: blackbox-exporter

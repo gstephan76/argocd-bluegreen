@@ -8,8 +8,37 @@ REQUESTS="${REQUESTS:-100}"
 
 die(){ echo "ERROR: $*" >&2; exit 1; }
 for c in oc curl awk sort uniq; do command -v "$c" >/dev/null 2>&1 || die "$c not found"; done
+
+usage() {
+  cat <<'EOF'
+Usage:
+  bash scripts/sample-canary-mesh-traffic.sh [--help]
+
+Environment:
+  REQUESTS=<n>              Number of requests to sample (default: 100)
+  NAMESPACE=<namespace>     Mesh demo namespace
+  MESH_INGRESS_NAMESPACE=  Namespace containing the demo Route
+  ROUTE_NAME=<name>         OpenShift Route name
+EOF
+}
+
+case "${1:-}" in
+  -h|--help) usage; exit 0 ;;
+  "") ;;
+  *) die "Unknown argument: $1" ;;
+esac
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib-canary-mesh.sh
+source "${SCRIPT_DIR}/lib-canary-mesh.sh"
+mesh_install_wrappers
 [[ "$REQUESTS" =~ ^[1-9][0-9]*$ ]] || die "REQUESTS must be a positive integer"
 oc whoami >/dev/null 2>&1 || die "Not logged in to OpenShift"
+
+echo "==> Verifying OpenShift Service Mesh 3.4+ prerequisite"
+bash scripts/check-canary-mesh-prereqs.sh
+echo "==> Verifying the complete Service Mesh data plane"
+TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-300}" bash scripts/check-canary-mesh-dataplane.sh
 
 if [[ -z "$MESH_INGRESS_NAMESPACE" ]]; then
   mapfile -t route_namespaces < <(

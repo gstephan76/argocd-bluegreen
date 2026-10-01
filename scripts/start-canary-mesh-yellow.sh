@@ -15,11 +15,20 @@ BLUE_MARKER="mesh-baseline-blue"
 die(){ echo "ERROR: $*" >&2; exit 1; }
 for c in oc git sed awk sort tail cut date; do command -v "$c" >/dev/null 2>&1 || die "$c not found"; done
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib-canary-mesh.sh
+source "${SCRIPT_DIR}/lib-canary-mesh.sh"
+mesh_install_wrappers
+
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 [[ -n "$ROOT" ]] || die "Run inside the repository"
 cd "$ROOT"
+mesh_enable_failure_diagnostics
 oc whoami >/dev/null 2>&1 || die "Not logged in to OpenShift"
 oc argo rollouts version >/dev/null 2>&1 || die "Argo Rollouts CLI plugin is required"
+
+echo "==> Verifying OpenShift Service Mesh 3.4+ prerequisite"
+bash scripts/check-canary-mesh-prereqs.sh
 
 if ! git diff --quiet || ! git diff --cached --quiet; then die "Tracked Git changes exist"; fi
 branch="$(git branch --show-current)"
@@ -46,6 +55,9 @@ current_image=""
 [[ -z "$current" ]] || current_image="$(oc get pods -n "$NAMESPACE" -l "rollouts-pod-template-hash=${current}" -o jsonpath='{.items[0].spec.containers[0].image}' 2>/dev/null || true)"
 [[ "$phase" == "Healthy" && -n "$stable" && "$stable" == "$current" && "$live_image" == "$BLUE_IMAGE" && "$live_marker" == "$BLUE_MARKER" && "$current_image" == "$BLUE_IMAGE" ]] || die "Live Rollout is not the settled canonical BLUE mesh baseline"
 
+echo "==> Verifying the complete Service Mesh data plane before changing Git"
+TIMEOUT_SECONDS="$TIMEOUT_SECONDS" bash scripts/check-canary-mesh-dataplane.sh
+
 previous_rollout_revision="$(oc get rollout "$APP_NAME" -n "$NAMESPACE" -o jsonpath='{.metadata.annotations.rollout\.argoproj\.io/revision}' 2>/dev/null || true)"
 
 echo "==> Changing desired image BLUE -> YELLOW"
@@ -63,15 +75,9 @@ rev="$(git rev-parse HEAD)"
 oc annotate applications.argoproj.io "$APP_NAME" -n "$ARGOCD_NAMESPACE" argocd.argoproj.io/refresh=hard --overwrite >/dev/null
 
 echo "==> Waiting for Argo CD revision ${rev:0:12}"
-deadline=$((SECONDS + TIMEOUT_SECONDS))
-while (( SECONDS < deadline )); do
-  sync="$(oc get applications.argoproj.io "$APP_NAME" -n "$ARGOCD_NAMESPACE" -o jsonpath='{.status.sync.status}' 2>/dev/null || true)"
-  got="$(oc get applications.argoproj.io "$APP_NAME" -n "$ARGOCD_NAMESPACE" -o jsonpath='{.status.sync.revision}' 2>/dev/null || true)"
-  [[ "$sync" == "Synced" && "$got" == "$rev" ]] && break
-  printf '    sync=%s revision=%s\n' "${sync:-unknown}" "${got:0:12}"
-  sleep "$POLL_SECONDS"
-done
-(( SECONDS < deadline )) || die "Timed out waiting for Argo CD"
+if ! mesh_wait_argocd_revision "$APP_NAME" "$ARGOCD_NAMESPACE" "$rev" "$TIMEOUT_SECONDS" "$POLL_SECONDS"; then
+  die "Argo CD did not reconcile exact revision ${rev}"
+fi
 
 echo "==> Waiting for Argo Rollouts to observe the fresh YELLOW revision"
 deadline=$((SECONDS + TIMEOUT_SECONDS))
@@ -84,6 +90,9 @@ while (( SECONDS < deadline )); do
   sleep "$POLL_SECONDS"
 done
 (( SECONDS < deadline )) || die "Timed out waiting for a new YELLOW Rollout revision"
+
+echo "==> Verifying YELLOW candidate sidecars before progressive analysis continues"
+TIMEOUT_SECONDS="$TIMEOUT_SECONDS" bash scripts/check-canary-mesh-dataplane.sh
 
 echo "==> Automatic mesh validation: 10% -> 25% -> 50% -> 75% -> 100% -> final pause"
 deadline=$((SECONDS + TIMEOUT_SECONDS))

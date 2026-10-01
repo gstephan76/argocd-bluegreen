@@ -16,12 +16,13 @@ spec:
     metadata:
       labels:
         app: rollouts-mesh-canary-demo
+        sidecar.istio.io/inject: "true"
       annotations:
-        demo-rollout-revision: "mesh-20261001T191059Z-3384822"
+        demo-rollout-revision: "mesh-baseline-blue"
     spec:
       containers:
         - name: rollouts-demo
-          image: argoproj/rollouts-demo:yellow
+          image: argoproj/rollouts-demo:blue
           imagePullPolicy: Always
           ports:
             - name: http

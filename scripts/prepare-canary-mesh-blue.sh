@@ -14,9 +14,15 @@ BLUE_MARKER="mesh-baseline-blue"
 die(){ echo "ERROR: $*" >&2; exit 1; }
 for c in oc git sed awk; do command -v "$c" >/dev/null 2>&1 || die "$c not found"; done
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib-canary-mesh.sh
+source "${SCRIPT_DIR}/lib-canary-mesh.sh"
+mesh_install_wrappers
+
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 [[ -n "$ROOT" ]] || die "Run inside the repository"
 cd "$ROOT"
+mesh_enable_failure_diagnostics
 oc whoami >/dev/null 2>&1 || die "Not logged in to OpenShift"
 oc argo rollouts version >/dev/null 2>&1 || die "Argo Rollouts CLI plugin is required"
 
@@ -34,8 +40,11 @@ required_mesh_assets=(
   canary-mesh-demo/service-stable.yaml
   canary-mesh-demo/service-canary.yaml
   canary-mesh-demo/analysis-template.yaml
+  canary-mesh-demo/podmonitor-istio-proxies.yaml
   canary-mesh-demo/rollout.yaml
+  scripts/lib-canary-mesh.sh
   scripts/check-canary-mesh-prereqs.sh
+  scripts/check-canary-mesh-dataplane.sh
   scripts/deploy-canary-mesh-demo.sh
 )
 for asset in "${required_mesh_assets[@]}"; do
@@ -43,7 +52,18 @@ for asset in "${required_mesh_assets[@]}"; do
 done
 
 mesh_status="$(
-  git status --porcelain --untracked-files=all --     argocd/application-canary-mesh.yaml     bootstrap/canary-mesh-prometheus-access.yaml     canary-mesh-demo     scripts/check-canary-mesh-prereqs.sh     scripts/deploy-canary-mesh-demo.sh     scripts/prepare-canary-mesh-blue.sh     scripts/start-canary-mesh-yellow.sh     scripts/promote-canary-mesh-stable.sh     scripts/sample-canary-mesh-traffic.sh
+  git status --porcelain --untracked-files=all -- \
+    argocd/application-canary-mesh.yaml \
+    bootstrap/canary-mesh-prometheus-access.yaml \
+    canary-mesh-demo \
+    scripts/lib-canary-mesh.sh \
+    scripts/check-canary-mesh-prereqs.sh \
+    scripts/check-canary-mesh-dataplane.sh \
+    scripts/deploy-canary-mesh-demo.sh \
+    scripts/prepare-canary-mesh-blue.sh \
+    scripts/start-canary-mesh-yellow.sh \
+    scripts/promote-canary-mesh-stable.sh \
+    scripts/sample-canary-mesh-traffic.sh
 )"
 if [[ -n "$mesh_status" ]]; then
   printf '%s\n' "$mesh_status" >&2
@@ -80,15 +100,9 @@ else
 fi
 
 echo "==> Waiting for Argo CD exact revision ${revision:0:12}"
-deadline=$((SECONDS + TIMEOUT_SECONDS))
-while (( SECONDS < deadline )); do
-  sync="$(oc get applications.argoproj.io "$APP_NAME" -n "$ARGOCD_NAMESPACE" -o jsonpath='{.status.sync.status}' 2>/dev/null || true)"
-  got="$(oc get applications.argoproj.io "$APP_NAME" -n "$ARGOCD_NAMESPACE" -o jsonpath='{.status.sync.revision}' 2>/dev/null || true)"
-  printf '    sync=%s revision=%s\n' "${sync:-unknown}" "${got:0:12}"
-  [[ "$sync" == "Synced" && "$got" == "$revision" ]] && break
-  sleep "$POLL_SECONDS"
-done
-(( SECONDS < deadline )) || die "Timed out waiting for Argo CD"
+if ! mesh_wait_argocd_revision "$APP_NAME" "$ARGOCD_NAMESPACE" "$revision" "$TIMEOUT_SECONDS" "$POLL_SECONDS"; then
+  die "Argo CD did not reconcile exact revision ${revision}"
+fi
 
 echo "==> Recovering trusted canonical BLUE mesh baseline"
 full_promotion_requested=0

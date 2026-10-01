@@ -12,11 +12,20 @@ YELLOW_IMAGE="argoproj/rollouts-demo:yellow"
 die(){ echo "ERROR: $*" >&2; exit 1; }
 for c in oc git awk sort tail cut; do command -v "$c" >/dev/null 2>&1 || die "$c not found"; done
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib-canary-mesh.sh
+source "${SCRIPT_DIR}/lib-canary-mesh.sh"
+mesh_install_wrappers
+
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 [[ -n "$ROOT" ]] || die "Run inside the repository"
 cd "$ROOT"
+mesh_enable_failure_diagnostics
 oc whoami >/dev/null 2>&1 || die "Not logged in to OpenShift"
 oc argo rollouts version >/dev/null 2>&1 || die "Argo Rollouts CLI plugin is required"
+
+echo "==> Verifying OpenShift Service Mesh 3.4+ prerequisite"
+bash scripts/check-canary-mesh-prereqs.sh
 
 if ! git diff --quiet || ! git diff --cached --quiet; then die "Tracked Git changes exist"; fi
 branch="$(git branch --show-current)"
@@ -55,6 +64,9 @@ printf '  phase=%s step=%s stable=%s current=%s image=%s marker=%s %s\n' "${phas
 [[ "$live_image" == "$desired_image" && "$live_marker" == "$desired_marker" ]] || die "Live Rollout desired state does not match Git"
 [[ "$current_image" == "$YELLOW_IMAGE" ]] || die "Current candidate is not YELLOW"
 [[ -n "$rollout_revision" ]] || die "Rollout revision is empty"
+
+echo "==> Verifying the complete Service Mesh data plane before promotion"
+TIMEOUT_SECONDS="$TIMEOUT_SECONDS" bash scripts/check-canary-mesh-dataplane.sh
 
 analysis_for_step() {
   local wanted_step="$1"

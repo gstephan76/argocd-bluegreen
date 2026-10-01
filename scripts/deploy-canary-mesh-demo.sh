@@ -17,9 +17,15 @@ POLL_SECONDS="${POLL_SECONDS:-5}"
 die(){ echo "ERROR: $*" >&2; exit 1; }
 for c in oc git awk sed grep curl; do command -v "$c" >/dev/null 2>&1 || die "$c not found"; done
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib-canary-mesh.sh
+source "${SCRIPT_DIR}/lib-canary-mesh.sh"
+mesh_install_wrappers
+
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 [[ -n "$ROOT" ]] || die "Run inside the repository"
 cd "$ROOT"
+mesh_enable_failure_diagnostics
 
 [[ -f scripts/check-canary-mesh-prereqs.sh ]] || \
   die "scripts/check-canary-mesh-prereqs.sh not found"
@@ -60,6 +66,12 @@ done
   die "bootstrap/canary-mesh-prometheus-access.yaml not found"
 [[ -f argocd/application-canary-mesh.yaml ]] || \
   die "argocd/application-canary-mesh.yaml not found"
+[[ -f scripts/check-canary-mesh-dataplane.sh ]] || \
+  die "scripts/check-canary-mesh-dataplane.sh not found"
+[[ -f scripts/lib-canary-mesh.sh ]] || \
+  die "scripts/lib-canary-mesh.sh not found"
+[[ -f canary-mesh-demo/podmonitor-istio-proxies.yaml ]] || \
+  die "canary-mesh-demo/podmonitor-istio-proxies.yaml not found"
 
 echo "==> Ensuring namespace ${NAMESPACE} exists and is enrolled in the OSSM 3.4+ mesh"
 oc get namespace "$NAMESPACE" >/dev/null 2>&1 || oc create namespace "$NAMESPACE"
@@ -119,6 +131,10 @@ while (( SECONDS < deadline )); do
 done
 (( SECONDS < deadline )) || die "Timed out waiting for rollouts-mesh-canary-prometheus-token"
 
+echo "==> Server-validating mesh demo manifests"
+oc apply --dry-run=server -f bootstrap/canary-mesh-prometheus-access.yaml >/dev/null
+oc apply --dry-run=server -k canary-mesh-demo >/dev/null
+
 echo "==> Applying Argo CD Application"
 oc apply -f argocd/application-canary-mesh.yaml
 oc annotate applications.argoproj.io "$APP_NAME" \
@@ -127,41 +143,12 @@ oc annotate applications.argoproj.io "$APP_NAME" \
   --overwrite >/dev/null
 
 echo "==> Waiting for Argo CD revision ${desired_revision:0:12}"
-deadline=$((SECONDS + TIMEOUT_SECONDS))
-while (( SECONDS < deadline )); do
-  sync="$(oc get applications.argoproj.io "$APP_NAME" -n "$ARGOCD_NAMESPACE" -o jsonpath='{.status.sync.status}' 2>/dev/null || true)"
-  health="$(oc get applications.argoproj.io "$APP_NAME" -n "$ARGOCD_NAMESPACE" -o jsonpath='{.status.health.status}' 2>/dev/null || true)"
-  revision="$(oc get applications.argoproj.io "$APP_NAME" -n "$ARGOCD_NAMESPACE" -o jsonpath='{.status.sync.revision}' 2>/dev/null || true)"
-  printf '    sync=%s health=%s revision=%s\n' "${sync:-unknown}" "${health:-unknown}" "${revision:0:12}"
-  [[ "$sync" == "Synced" && "$revision" == "$desired_revision" ]] && break
-  sleep "$POLL_SECONDS"
-done
-(( SECONDS < deadline )) || die "Timed out waiting for Argo CD revision ${desired_revision}"
-
-echo "==> Waiting for mesh canary resources"
-oc rollout status deployment/rollouts-mesh-canary-blackbox -n "$NAMESPACE" --timeout="${TIMEOUT_SECONDS}s"
-oc rollout status deployment/istio-ingressgateway -n "$MESH_INGRESS_NAMESPACE" --timeout="${TIMEOUT_SECONDS}s"
-deadline=$((SECONDS + TIMEOUT_SECONDS))
-while (( SECONDS < deadline )); do
-  oc get rollout "$APP_NAME" -n "$NAMESPACE" >/dev/null 2>&1 && \
-  oc get virtualservice rollouts-mesh-canary -n "$NAMESPACE" >/dev/null 2>&1 && \
-  oc get gateway rollouts-mesh-canary-gateway -n "$NAMESPACE" >/dev/null 2>&1 && \
-  oc get route "$ROUTE_NAME" -n "$MESH_INGRESS_NAMESPACE" >/dev/null 2>&1 && \
-  oc get analysistemplate "$ANALYSIS_TEMPLATE" -n "$NAMESPACE" >/dev/null 2>&1 && break
-  sleep "$POLL_SECONDS"
-done
-(( SECONDS < deadline )) || die "Timed out waiting for mesh canary resources"
-
-oc wait --for=condition=Ready pod \
-  -l app="$APP_NAME" \
-  -n "$NAMESPACE" \
-  --timeout="${TIMEOUT_SECONDS}s"
-
-pod="$(oc get pod -n "$NAMESPACE" -l app="$APP_NAME" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
-containers="$(oc get pod "$pod" -n "$NAMESPACE" -o jsonpath='{.spec.containers[*].name}' 2>/dev/null || true)"
-if [[ " $containers " != *" istio-proxy "* ]]; then
-  die "Application pods are not sidecar-injected. Verify the istio-discovery/istio-injection namespace labels and the OSSM control plane."
+if ! mesh_wait_argocd_revision "$APP_NAME" "$ARGOCD_NAMESPACE" "$desired_revision" "$TIMEOUT_SECONDS" "$POLL_SECONDS"; then
+  die "Argo CD did not reconcile exact revision ${desired_revision}"
 fi
+
+echo "==> Verifying the complete Service Mesh data plane"
+TIMEOUT_SECONDS="$TIMEOUT_SECONDS" bash scripts/check-canary-mesh-dataplane.sh
 
 echo "==> Verifying the dedicated demo ingress gateway and Route"
 oc get service "$MESH_INGRESS_SERVICE" -n "$MESH_INGRESS_NAMESPACE" >/dev/null 2>&1 || die "Ingress gateway Service ${MESH_INGRESS_NAMESPACE}/${MESH_INGRESS_SERVICE} not found"
