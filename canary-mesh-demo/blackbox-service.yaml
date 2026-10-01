@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: rollouts-mesh-canary-blackbox
+  namespace: rollouts-mesh-canary-demo
+  labels:
+    app: rollouts-mesh-canary-blackbox
+spec:
+  selector:
+    app: rollouts-mesh-canary-blackbox
+  ports:
+    - name: http
+      port: 9115
+      targetPort: http

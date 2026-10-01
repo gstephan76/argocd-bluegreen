@@ -1,0 +1,24 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: rollouts-mesh-canary-blackbox
+  namespace: rollouts-mesh-canary-demo
+spec:
+  selector:
+    matchLabels:
+      app: rollouts-mesh-canary-blackbox
+  endpoints:
+    - port: http
+      path: /probe
+      interval: 5s
+      scrapeTimeout: 4s
+      params:
+        module:
+          - http_200
+        target:
+          - http://rollouts-mesh-canary-canary.rollouts-mesh-canary-demo.svc.cluster.local/color
+      metricRelabelings:
+        - targetLabel: rollout
+          replacement: rollouts-mesh-canary-demo
+        - targetLabel: probe_target
+          replacement: canary

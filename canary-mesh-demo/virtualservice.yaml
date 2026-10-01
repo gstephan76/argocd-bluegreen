@@ -1,0 +1,23 @@
+apiVersion: networking.istio.io/v1
+kind: VirtualService
+metadata:
+  name: rollouts-mesh-canary
+  namespace: rollouts-mesh-canary-demo
+spec:
+  gateways:
+    - rollouts-mesh-canary-gateway
+  hosts:
+    - "*"
+  http:
+    - name: primary
+      route:
+        - destination:
+            host: rollouts-mesh-canary-stable
+            port:
+              number: 80
+          weight: 100
+        - destination:
+            host: rollouts-mesh-canary-canary
+            port:
+              number: 80
+          weight: 0
