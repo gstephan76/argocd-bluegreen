@@ -1,0 +1,45 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: canary-mesh-bookinfo
+  namespace: openshift-gitops
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/gstephan76/argocd-bluegreen.git
+    targetRevision: main
+    path: canary-mesh-bookinfo
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: canary-mesh-bookinfo
+
+  # Argo Rollouts owns the ReplicaSet-hash selectors on the productpage
+  # stable/canary Services and the runtime weights on the Istio route.
+  ignoreDifferences:
+    - group: ""
+      kind: Service
+      name: canary-mesh-bookinfo-stable
+      namespace: canary-mesh-bookinfo
+      jqPathExpressions:
+        - '.spec.selector."rollouts-pod-template-hash"'
+    - group: ""
+      kind: Service
+      name: canary-mesh-bookinfo-canary
+      namespace: canary-mesh-bookinfo
+      jqPathExpressions:
+        - '.spec.selector."rollouts-pod-template-hash"'
+    - group: networking.istio.io
+      kind: VirtualService
+      name: canary-mesh-bookinfo
+      namespace: canary-mesh-bookinfo
+      jqPathExpressions:
+        - '.spec.http[] | select(.name == "primary") | .route[].weight'
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ApplyOutOfSyncOnly=true
+      - RespectIgnoreDifferences=true

@@ -1,0 +1,84 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: canary-mesh-bookinfo-prometheus
+  namespace: canary-mesh-bookinfo
+spec:
+  args:
+    - name: prometheus-token
+      valueFrom:
+        secretKeyRef:
+          name: canary-mesh-bookinfo-prometheus-token
+          key: token
+
+  metrics:
+    - name: candidate-bookinfo-page
+      initialDelay: 20s
+      interval: 10s
+      count: 3
+      failureLimit: 0
+      successCondition: len(result) == 1 && result[0] == 1
+      provider:
+        prometheus:
+          address: https://thanos-querier.openshift-monitoring.svc:9091
+          insecure: true
+          timeout: 10
+          headers:
+            - key: Authorization
+              value: "Bearer {{args.prometheus-token}}"
+          query: |
+            max(
+              probe_success{
+                rollout="canary-mesh-bookinfo",
+                probe_target="canary-full-stack"
+              }
+            )
+
+    - name: candidate-bookinfo-http-200
+      initialDelay: 20s
+      interval: 10s
+      count: 3
+      failureLimit: 0
+      successCondition: len(result) == 1 && result[0] == 200
+      provider:
+        prometheus:
+          address: https://thanos-querier.openshift-monitoring.svc:9091
+          insecure: true
+          timeout: 10
+          headers:
+            - key: Authorization
+              value: "Bearer {{args.prometheus-token}}"
+          query: |
+            max(
+              probe_http_status_code{
+                rollout="canary-mesh-bookinfo",
+                probe_target="canary-full-stack"
+              }
+            )
+
+    - name: candidate-downstream-chain
+      initialDelay: 30s
+      interval: 10s
+      count: 3
+      failureLimit: 0
+      successCondition: len(result) == 1 && result[0] > 0
+      provider:
+        prometheus:
+          address: https://thanos-querier.openshift-monitoring.svc:9091
+          insecure: true
+          timeout: 10
+          headers:
+            - key: Authorization
+              value: "Bearer {{args.prometheus-token}}"
+          query: |
+            min(
+              sum by (destination_service_name) (
+                rate(
+                  istio_requests_total{
+                    destination_service_namespace="canary-mesh-bookinfo",
+                    destination_service_name=~"bookinfo-(details|reviews|ratings)-canary",
+                    response_code=~"2.."
+                  }[30s]
+                )
+              )
+            )
