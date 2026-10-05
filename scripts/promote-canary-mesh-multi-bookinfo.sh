@@ -11,8 +11,55 @@ B_ROLLOUT="${B_ROLLOUT:-bookinfo-b}"
 ROLLOUT_NAME="$B_ROLLOUT"
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-420}"
 POLL_SECONDS="${POLL_SECONDS:-5}"
+FAST_DEMO_PATH="${FAST_DEMO_PATH:-1}"
 
 die(){ echo "ERROR: $*" >&2; exit 1; }
+
+# prepare and start already performed the expensive validation. Promotion is a
+# lightweight approval action by default. Set FAST_DEMO_PATH=0 only when the
+# older exhaustive promotion-time validation is explicitly wanted.
+if [[ "$FAST_DEMO_PATH" == "1" ]]; then
+  command -v oc >/dev/null 2>&1 || die "oc not found"
+
+  phase="$(oc get rollout "$ROLLOUT_NAME" -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+  step="$(oc get rollout "$ROLLOUT_NAME" -n "$NAMESPACE" -o jsonpath='{.status.currentStepIndex}' 2>/dev/null || true)"
+  stable="$(oc get rollout "$ROLLOUT_NAME" -n "$NAMESPACE" -o jsonpath='{.status.stableRS}' 2>/dev/null || true)"
+  current="$(oc get rollout "$ROLLOUT_NAME" -n "$NAMESPACE" -o jsonpath='{.status.currentPodHash}' 2>/dev/null || true)"
+  marker="$(oc get rollout "$ROLLOUT_NAME" -n "$NAMESPACE" -o jsonpath='{.spec.template.metadata.annotations.demo-bookinfo-revision}' 2>/dev/null || true)"
+
+  [[ "$marker" == bookinfo-b-candidate-* ]] || die "Current Bookinfo B revision is not a candidate"
+
+  if [[ "$phase" == "Healthy" && -n "$stable" && "$stable" == "$current" ]]; then
+    echo "==> Bookinfo B candidate ${marker} is already promoted; no action required"
+    exit 0
+  fi
+
+  [[ "$phase" == "Paused" ]] || die "Bookinfo B is not paused for promotion (phase=${phase:-unknown})"
+  [[ "$step" == "10" ]] || die "Bookinfo B is not at the final approval pause (step=${step:-unknown})"
+  [[ -n "$current" && "$stable" != "$current" ]] || die "No pending Bookinfo B candidate exists"
+
+  candidate_hash="$current"
+  echo "==> Promoting Bookinfo B candidate ${candidate_hash}"
+  oc argo rollouts promote "$ROLLOUT_NAME" -n "$NAMESPACE"
+
+  deadline=$((SECONDS + 180))
+  while (( SECONDS < deadline )); do
+    phase="$(oc get rollout "$ROLLOUT_NAME" -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+    stable="$(oc get rollout "$ROLLOUT_NAME" -n "$NAMESPACE" -o jsonpath='{.status.stableRS}' 2>/dev/null || true)"
+    current="$(oc get rollout "$ROLLOUT_NAME" -n "$NAMESPACE" -o jsonpath='{.status.currentPodHash}' 2>/dev/null || true)"
+    printf '    phase=%s stable=%s current=%s\n' "${phase:-unknown}" "${stable:-none}" "${current:-none}"
+    [[ "$phase" != "Degraded" ]] || die "Bookinfo B became Degraded during promotion"
+    [[ "$phase" == "Healthy" && "$stable" == "$candidate_hash" && "$current" == "$candidate_hash" ]] && break
+    sleep 2
+  done
+  (( SECONDS < deadline )) || die "Timed out waiting for Bookinfo B promotion"
+
+  echo
+  oc argo rollouts get rollout "$ROLLOUT_NAME" -n "$NAMESPACE"
+  echo
+  echo "Bookinfo B promotion complete."
+  exit 0
+fi
 for c in oc jq curl; do command -v "$c" >/dev/null 2>&1 || die "$c not found"; done
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
