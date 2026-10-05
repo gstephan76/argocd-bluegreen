@@ -1,0 +1,35 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: canary-mesh-full-demo-a
+  namespace: openshift-gitops
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/gstephan76/argocd-bluegreen.git
+    targetRevision: main
+    path: full-demo/bookinfo-a
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: canary-mesh-full-demo
+  ignoreDifferences:
+    - group: ""
+      kind: Service
+      name: bookinfo-a-productpage-stable
+      namespace: canary-mesh-full-demo
+      jqPathExpressions:
+        - '.spec.selector."rollouts-pod-template-hash"'
+    - group: ""
+      kind: Service
+      name: bookinfo-a-productpage-canary
+      namespace: canary-mesh-full-demo
+      jqPathExpressions:
+        - '.spec.selector."rollouts-pod-template-hash"'
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ApplyOutOfSyncOnly=true
+      - RespectIgnoreDifferences=true

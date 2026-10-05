@@ -1,0 +1,16 @@
+apiVersion: networking.istio.io/v1
+kind: Gateway
+metadata:
+  name: canary-mesh-full-demo-gateway
+  namespace: canary-mesh-full-demo
+spec:
+  selector:
+    istio: ingressgateway
+    app.kubernetes.io/component: canary-mesh-full-demo-ingressgateway
+  servers:
+    - port:
+        number: 8080
+        name: http
+        protocol: HTTP
+      hosts:
+        - "*"

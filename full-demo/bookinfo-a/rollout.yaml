@@ -1,0 +1,80 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: bookinfo-a
+  namespace: canary-mesh-full-demo
+  annotations:
+    argocd.argoproj.io/sync-wave: '1'
+spec:
+  replicas: 4
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: bookinfo-a
+      app.kubernetes.io/name: productpage
+  template:
+    metadata:
+      annotations:
+        demo-bookinfo-revision: bookinfo-a-baseline-stable
+        prometheus.io/scrape: 'true'
+        prometheus.io/path: /stats/prometheus
+        prometheus.io/port: '15090'
+      labels:
+        app.kubernetes.io/part-of: bookinfo
+        app.kubernetes.io/instance: bookinfo-a
+        app.kubernetes.io/name: productpage
+        app.kubernetes.io/version: v1
+        track: stable
+        sidecar.istio.io/inject: 'true'
+    spec:
+      serviceAccountName: bookinfo-a-productpage
+      containers:
+      - name: productpage
+        image: quay.io/sail-dev/examples-bookinfo-productpage-v1:1.20.2
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: DETAILS_HOSTNAME
+          value: bookinfo-a-details-stable
+        - name: REVIEWS_HOSTNAME
+          value: bookinfo-a-reviews-stable
+        - name: RATINGS_HOSTNAME
+          value: bookinfo-a-ratings-stable
+        ports:
+        - name: http
+          containerPort: 9080
+        readinessProbe:
+          httpGet:
+            path: /productpage
+            port: http
+          initialDelaySeconds: 2
+          periodSeconds: 5
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+      volumes:
+      - name: tmp
+        emptyDir: {}
+  strategy:
+    canary:
+      stableService: bookinfo-a-productpage-stable
+      canaryService: bookinfo-a-productpage-canary
+      maxUnavailable: 0
+      maxSurge: 1
+      trafficRouting:
+        istio:
+          virtualService:
+            name: full-demo-router
+            routes:
+            - bookinfo-a-primary
+      steps:
+      - pause: {}
+      - setWeight: 10
+      - pause: {}
+      - setWeight: 25
+      - pause: {}
+      - setWeight: 50
+      - pause: {}
+      - setWeight: 75
+      - pause: {}
+      - setWeight: 100
+      - pause: {}

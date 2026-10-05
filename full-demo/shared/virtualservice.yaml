@@ -1,0 +1,87 @@
+apiVersion: networking.istio.io/v1
+kind: VirtualService
+metadata:
+  name: full-demo-router
+  namespace: canary-mesh-full-demo
+spec:
+  gateways:
+  - canary-mesh-full-demo-gateway
+  hosts:
+  - '*'
+  http:
+  - name: bookinfo-a-primary
+    match:
+    - headers:
+        x-bookinfo-target:
+          exact: a
+      uri:
+        exact: /productpage
+    - headers:
+        x-bookinfo-target:
+          exact: a
+      uri:
+        prefix: /static
+    - headers:
+        x-bookinfo-target:
+          exact: a
+      uri:
+        exact: /login
+    - headers:
+        x-bookinfo-target:
+          exact: a
+      uri:
+        exact: /logout
+    - headers:
+        x-bookinfo-target:
+          exact: a
+      uri:
+        prefix: /api/v1/products
+    route:
+    - destination:
+        host: bookinfo-a-productpage-stable
+        port:
+          number: 9080
+      weight: 100
+    - destination:
+        host: bookinfo-a-productpage-canary
+        port:
+          number: 9080
+      weight: 0
+  - name: bookinfo-b-primary
+    match:
+    - headers:
+        x-bookinfo-target:
+          exact: b
+      uri:
+        exact: /productpage
+    - headers:
+        x-bookinfo-target:
+          exact: b
+      uri:
+        prefix: /static
+    - headers:
+        x-bookinfo-target:
+          exact: b
+      uri:
+        exact: /login
+    - headers:
+        x-bookinfo-target:
+          exact: b
+      uri:
+        exact: /logout
+    - headers:
+        x-bookinfo-target:
+          exact: b
+      uri:
+        prefix: /api/v1/products
+    route:
+    - destination:
+        host: bookinfo-b-productpage-stable
+        port:
+          number: 9080
+      weight: 100
+    - destination:
+        host: bookinfo-b-productpage-canary
+        port:
+          number: 9080
+      weight: 0

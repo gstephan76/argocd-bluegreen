@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: bookinfo-b-productpage-stable
+  namespace: canary-mesh-full-demo
+  labels:
+    app.kubernetes.io/part-of: bookinfo
+    app.kubernetes.io/instance: bookinfo-b
+    app.kubernetes.io/name: productpage
+spec:
+  selector:
+    app.kubernetes.io/instance: bookinfo-b
+    app.kubernetes.io/name: productpage
+  ports:
+  - name: http
+    port: 9080
+    targetPort: http
