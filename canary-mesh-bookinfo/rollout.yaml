@@ -12,14 +12,14 @@ spec:
   template:
     metadata:
       annotations:
-        demo-bookinfo-revision: "bookinfo-candidate-20261002T185926Z"
+        demo-bookinfo-revision: "bookinfo-baseline-stable"
         prometheus.io/scrape: "true"
         prometheus.io/path: /stats/prometheus
         prometheus.io/port: "15090"
       labels:
         app: productpage
         version: v1
-        track: canary
+        track: stable
         sidecar.istio.io/inject: "true"
     spec:
       serviceAccountName: bookinfo-productpage
@@ -29,11 +29,11 @@ spec:
           imagePullPolicy: IfNotPresent
           env:
             - name: DETAILS_HOSTNAME
-              value: bookinfo-details-canary
+              value: bookinfo-details-stable
             - name: REVIEWS_HOSTNAME
-              value: bookinfo-reviews-canary
+              value: bookinfo-reviews-stable
             - name: RATINGS_HOSTNAME
-              value: bookinfo-ratings-canary
+              value: bookinfo-ratings-stable
           ports:
             - name: http
               containerPort: 9080
