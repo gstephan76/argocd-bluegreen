@@ -23,9 +23,27 @@ step="$(oc get rollout "$APP_NAME" -n "$NAMESPACE" -o jsonpath='{.status.current
 stable="$(oc get rollout "$APP_NAME" -n "$NAMESPACE" -o jsonpath='{.status.stableRS}' 2>/dev/null || true)"
 current="$(oc get rollout "$APP_NAME" -n "$NAMESPACE" -o jsonpath='{.status.currentPodHash}' 2>/dev/null || true)"
 marker="$(oc get rollout "$APP_NAME" -n "$NAMESPACE" -o jsonpath='{.spec.template.metadata.annotations.demo-bookinfo-revision}' 2>/dev/null || true)"
+[[ "$marker" == bookinfo-candidate-* ]] || die "Current desired revision is not a Bookinfo candidate"
+
+# Idempotent success path: the exact candidate is already stable. A repeated
+# promote must validate the result and return success, never advance anything.
+if [[ "$phase" == "Healthy" && -n "$stable" && "$stable" == "$current" ]]; then
+  details="$(oc get rollout "$APP_NAME" -n "$NAMESPACE" -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="DETAILS_HOSTNAME")].value}' 2>/dev/null || true)"
+  reviews="$(oc get rollout "$APP_NAME" -n "$NAMESPACE" -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="REVIEWS_HOSTNAME")].value}' 2>/dev/null || true)"
+  ratings="$(oc get rollout "$APP_NAME" -n "$NAMESPACE" -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="RATINGS_HOSTNAME")].value}' 2>/dev/null || true)"
+  stable_weight="$(oc get virtualservice.networking.istio.io "$APP_NAME" -n "$NAMESPACE" -o jsonpath='{.spec.http[?(@.name=="primary")].route[0].weight}' 2>/dev/null || true)"
+  canary_weight="$(oc get virtualservice.networking.istio.io "$APP_NAME" -n "$NAMESPACE" -o jsonpath='{.spec.http[?(@.name=="primary")].route[1].weight}' 2>/dev/null || true)"
+  [[ "$details" == "bookinfo-details-canary" && "$reviews" == "bookinfo-reviews-canary" && "$ratings" == "bookinfo-ratings-canary" ]] ||
+    die "Already-promoted candidate is not isolated to the canary downstream stack"
+  [[ "$stable_weight" == "100" && "$canary_weight" == "0" ]] ||
+    die "Already-promoted candidate has unexpected routing: stable=${stable_weight:-missing}% canary=${canary_weight:-missing}%"
+  TIMEOUT_SECONDS="$TIMEOUT_SECONDS" bash scripts/check-canary-mesh-bookinfo-dataplane.sh
+  echo "==> Candidate ${marker} is already promoted and verified; no action required"
+  exit 0
+fi
+
 [[ "$phase" == "Paused" && "$step" == "10" && -n "$current" && "$stable" != "$current" ]] ||
   die "Rollout is not at the final 100% manual approval pause"
-[[ "$marker" == bookinfo-candidate-* ]] || die "Current desired revision is not a Bookinfo candidate"
 
 TIMEOUT_SECONDS="$TIMEOUT_SECONDS" bash scripts/check-canary-mesh-bookinfo-dataplane.sh
 
@@ -57,8 +75,14 @@ while (( SECONDS < deadline )); do
 done
 (( SECONDS < deadline )) || die "Timed out waiting for whole-Bookinfo candidate to become stable"
 
+stable_weight="$(oc get virtualservice.networking.istio.io "$APP_NAME" -n "$NAMESPACE" -o jsonpath='{.spec.http[?(@.name=="primary")].route[0].weight}' 2>/dev/null || true)"
+canary_weight="$(oc get virtualservice.networking.istio.io "$APP_NAME" -n "$NAMESPACE" -o jsonpath='{.spec.http[?(@.name=="primary")].route[1].weight}' 2>/dev/null || true)"
+[[ "$stable_weight" == "100" && "$canary_weight" == "0" ]] ||
+  die "Post-promotion routing is not normalized: stable=${stable_weight:-missing}% canary=${canary_weight:-missing}%"
+
 echo
 oc argo rollouts get rollout "$APP_NAME" -n "$NAMESPACE"
 echo
 echo "Promotion complete. The verified whole-Bookinfo candidate is now the active stable revision."
+echo "Repeated promotion is a no-op for this candidate."
 echo "Use scripts/prepare-canary-mesh-bookinfo.sh before starting another canary cycle."

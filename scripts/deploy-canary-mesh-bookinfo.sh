@@ -136,22 +136,25 @@ TIMEOUT_SECONDS="$TIMEOUT_SECONDS" bash scripts/check-canary-mesh-bookinfo-datap
 host="$(oc get route "$APP_NAME" -n "$NAMESPACE" -o jsonpath='{.spec.host}')"
 [[ -n "$host" ]] || die "Route host is empty"
 
-echo "==> Verifying stable Bookinfo through the ingress path"
+echo "==> Verifying Bookinfo through the ingress path without changing rollout state"
 deadline=$((SECONDS + TIMEOUT_SECONDS))
 while (( SECONDS < deadline )); do
   body="$(curl -sk "https://${host}/productpage" || true)"
   if grep -q 'Book Details' <<<"$body" &&
      grep -q 'Book Reviews' <<<"$body" &&
      grep -q 'glyphicon glyphicon-star' <<<"$body" &&
-     grep -q 'text-black-500' <<<"$body"; then
+     { grep -q 'text-black-500' <<<"$body" || grep -q 'text-red-500' <<<"$body"; }; then
     break
   fi
   sleep "$POLL_SECONDS"
 done
-(( SECONDS < deadline )) || die "Stable Bookinfo baseline did not become reachable through https://${host}/productpage"
+(( SECONDS < deadline )) || die "Bookinfo did not become reachable through https://${host}/productpage"
+
+weights="$(oc get virtualservice.networking.istio.io "$APP_NAME" -n "$NAMESPACE" -o jsonpath='stable={.spec.http[?(@.name=="primary")].route[0].weight}% canary={.spec.http[?(@.name=="primary")].route[1].weight}%' 2>/dev/null || true)"
+echo "==> Current rollout traffic: ${weights:-unknown}"
 
 echo
 oc argo rollouts get rollout "$APP_NAME" -n "$NAMESPACE"
 echo
-echo "Whole-Bookinfo canary demo deployed: https://${host}/productpage"
+echo "Whole-Bookinfo canary demo reconciled idempotently: https://${host}/productpage"
 echo "Next: bash scripts/prepare-canary-mesh-bookinfo.sh"
