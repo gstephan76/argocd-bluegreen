@@ -1,0 +1,24 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: bookinfo-b-blackbox
+  namespace: canary-mesh-multi-bookinfo
+spec:
+  selector:
+    matchLabels:
+      app: bookinfo-b-blackbox
+  endpoints:
+    - port: http
+      path: /probe
+      interval: 5s
+      scrapeTimeout: 4s
+      params:
+        module:
+          - bookinfo_b_candidate
+        target:
+          - http://bookinfo-b-productpage-canary.canary-mesh-multi-bookinfo.svc.cluster.local:9080/productpage
+      metricRelabelings:
+        - targetLabel: rollout
+          replacement: bookinfo-b
+        - targetLabel: probe_target
+          replacement: canary-full-stack

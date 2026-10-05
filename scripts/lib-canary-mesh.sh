@@ -68,10 +68,10 @@ mesh_wait_argocd_revision() {
 }
 
 mesh_dump_diagnostics() {
-  local ns="${NAMESPACE:-rollouts-mesh-canary-demo}" app="${APP_NAME:-rollouts-mesh-canary-demo}" argocd_ns="${ARGOCD_NAMESPACE:-openshift-gitops}"
+  local ns="${NAMESPACE:-rollouts-mesh-canary-demo}" app="${APP_NAME:-rollouts-mesh-canary-demo}" rollout="${ROLLOUT_NAME:-${APP_NAME:-rollouts-mesh-canary-demo}}" argocd_ns="${ARGOCD_NAMESPACE:-openshift-gitops}"
   echo >&2; echo "===== mesh-canary diagnostics =====" >&2
   if oc get namespace "$ns" >/dev/null 2>&1; then
-    echo "--- Rollout ---" >&2; oc get rollout.argoproj.io "$app" -n "$ns" -o wide >&2 2>/dev/null || true
+    echo "--- Rollout ---" >&2; oc get rollout.argoproj.io "$rollout" -n "$ns" -o wide >&2 2>/dev/null || true
     echo "--- Deployments / Pods / Services ---" >&2; oc get deployment,pod,service -n "$ns" -o wide >&2 2>/dev/null || true
     echo "--- Istio routing / Route / PodMonitor ---" >&2
     oc get gateway.networking.istio.io,virtualservice.networking.istio.io,route.route.openshift.io,podmonitor.monitoring.coreos.com -n "$ns" -o wide >&2 2>/dev/null || true

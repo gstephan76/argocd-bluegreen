@@ -1,0 +1,36 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: canary-mesh-multi-bookinfo
+  labels:
+    istio-discovery: enabled
+    istio-injection: enabled
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: canary-mesh-multi-bookinfo-metrics
+  namespace: canary-mesh-multi-bookinfo
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: canary-mesh-multi-bookinfo-prometheus-token
+  namespace: canary-mesh-multi-bookinfo
+  annotations:
+    kubernetes.io/service-account.name: canary-mesh-multi-bookinfo-metrics
+type: kubernetes.io/service-account-token
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: canary-mesh-multi-bookinfo-prometheus-reader
+  namespace: openshift-monitoring
+subjects:
+  - kind: ServiceAccount
+    name: canary-mesh-multi-bookinfo-metrics
+    namespace: canary-mesh-multi-bookinfo
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-monitoring-view

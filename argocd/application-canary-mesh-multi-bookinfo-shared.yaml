@@ -1,0 +1,21 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: canary-mesh-multi-bookinfo-shared
+  namespace: openshift-gitops
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/gstephan76/argocd-bluegreen.git
+    targetRevision: main
+    path: canary-mesh-multi-bookinfo/shared
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: canary-mesh-multi-bookinfo
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ApplyOutOfSyncOnly=true

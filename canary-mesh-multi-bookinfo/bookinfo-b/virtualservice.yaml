@@ -1,0 +1,44 @@
+apiVersion: networking.istio.io/v1
+kind: VirtualService
+metadata:
+  name: bookinfo-b
+  namespace: canary-mesh-multi-bookinfo
+spec:
+  gateways:
+    - canary-mesh-multi-bookinfo-gateway
+  hosts:
+    - "*"
+  http:
+    - name: primary
+      match:
+        - authority:
+            regex: '^bookinfo-b-canary-mesh-multi-bookinfo\..*$'
+          uri:
+            exact: /productpage
+        - authority:
+            regex: '^bookinfo-b-canary-mesh-multi-bookinfo\..*$'
+          uri:
+            prefix: /static
+        - authority:
+            regex: '^bookinfo-b-canary-mesh-multi-bookinfo\..*$'
+          uri:
+            exact: /login
+        - authority:
+            regex: '^bookinfo-b-canary-mesh-multi-bookinfo\..*$'
+          uri:
+            exact: /logout
+        - authority:
+            regex: '^bookinfo-b-canary-mesh-multi-bookinfo\..*$'
+          uri:
+            prefix: /api/v1/products
+      route:
+        - destination:
+            host: bookinfo-b-productpage-stable
+            port:
+              number: 9080
+          weight: 100
+        - destination:
+            host: bookinfo-b-productpage-canary
+            port:
+              number: 9080
+          weight: 0

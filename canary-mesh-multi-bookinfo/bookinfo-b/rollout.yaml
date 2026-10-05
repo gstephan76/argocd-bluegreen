@@ -1,0 +1,88 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: bookinfo-b
+  namespace: canary-mesh-multi-bookinfo
+spec:
+  replicas: 4
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: bookinfo-b
+      app.kubernetes.io/name: productpage
+  template:
+    metadata:
+      annotations:
+        demo-bookinfo-revision: "bookinfo-b-baseline-stable"
+        prometheus.io/scrape: "true"
+        prometheus.io/path: /stats/prometheus
+        prometheus.io/port: "15090"
+      labels:
+        app.kubernetes.io/part-of: bookinfo
+        app.kubernetes.io/instance: bookinfo-b
+        app.kubernetes.io/name: productpage
+        app.kubernetes.io/version: v1
+        track: stable
+        sidecar.istio.io/inject: "true"
+    spec:
+      serviceAccountName: bookinfo-b-productpage
+      containers:
+        - name: productpage
+          image: quay.io/sail-dev/examples-bookinfo-productpage-v1:1.20.2
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: DETAILS_HOSTNAME
+              value: bookinfo-b-details-stable
+            - name: REVIEWS_HOSTNAME
+              value: bookinfo-b-reviews-stable
+            - name: RATINGS_HOSTNAME
+              value: bookinfo-b-ratings-stable
+          ports:
+            - name: http
+              containerPort: 9080
+          readinessProbe:
+            httpGet:
+              path: /productpage
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+  strategy:
+    canary:
+      stableService: bookinfo-b-productpage-stable
+      canaryService: bookinfo-b-productpage-canary
+      maxUnavailable: 0
+      maxSurge: 1
+      trafficRouting:
+        istio:
+          virtualService:
+            name: bookinfo-b
+            routes:
+              - primary
+      steps:
+        - setWeight: 10
+        - analysis:
+            templates:
+              - templateName: bookinfo-b-prometheus
+        - setWeight: 25
+        - analysis:
+            templates:
+              - templateName: bookinfo-b-prometheus
+        - setWeight: 50
+        - analysis:
+            templates:
+              - templateName: bookinfo-b-prometheus
+        - setWeight: 75
+        - analysis:
+            templates:
+              - templateName: bookinfo-b-prometheus
+        - setWeight: 100
+        - analysis:
+            templates:
+              - templateName: bookinfo-b-prometheus
+        - pause: {}
