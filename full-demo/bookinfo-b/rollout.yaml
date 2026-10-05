@@ -44,7 +44,7 @@ spec:
           containerPort: 9080
         readinessProbe:
           httpGet:
-            path: /productpage
+            path: /health
             port: http
           initialDelaySeconds: 2
           periodSeconds: 5
