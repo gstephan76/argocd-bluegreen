@@ -208,18 +208,32 @@ It requires the same platform prerequisites as `canary-mesh-bookinfo`:
 
 ## Demo workflow
 
-From the repository root:
+Run the demo from the repository root:
+
+```bash
+cd ~/Documents/POCs/ArgoCD
+```
+
+Run the commands in the following order. Do not start the next stage until the
+previous command has completed successfully.
+
+### 1. Deploy / reconcile the demo
 
 ```bash
 bash scripts/deploy-canary-mesh-multi-bookinfo.sh
-bash scripts/prepare-canary-mesh-multi-bookinfo.sh
-bash scripts/start-canary-mesh-multi-bookinfo.sh
 ```
 
-`deploy` reconciles both Rollout-capable Bookinfo applications and the shared
-infrastructure without changing an active rollout state.
+`deploy` reconciles the shared Istio ingress resources, both Bookinfo Argo CD
+Applications, both Rollouts, the two external Routes, and the monitoring and
+analysis prerequisites. It does not intentionally start a new canary cycle.
 
-`prepare` establishes the known initial condition for **both** Rollouts:
+### 2. Prepare the baseline
+
+```bash
+bash scripts/prepare-canary-mesh-multi-bookinfo.sh
+```
+
+Before the audience-facing rollout begins, both Rollouts must be at:
 
 ```text
 Bookinfo A = Healthy, stable=100%, canary=0%
@@ -229,28 +243,60 @@ Bookinfo B = Healthy, stable=100%, canary=0%
 After both Rollouts are safely back at that baseline, `prepare` also removes
 historical `AnalysisRun` objects and scaled-down ReplicaSets owned by each
 Rollout. The current stable ReplicaSet and the Rollout CR itself are preserved.
-This keeps the Argo CD resource tree compact between demo runs without causing
-the productpage workload to be recreated. Set `CLEAN_ROLLOUT_HISTORY=0` to
-preserve the history for troubleshooting.
+This keeps the Argo CD resource tree compact between demo runs. Set
+`CLEAN_ROLLOUT_HISTORY=0` when historical objects must be preserved for
+troubleshooting.
 
-`start` mutates and exercises **only Bookinfo B**. It refuses to begin if Bookinfo
-A is not still parked at its baseline.
-
-Observe both Rollouts:
+### 3. Optionally verify both Rollouts before starting
 
 ```bash
-oc argo rollouts get rollout bookinfo-a \
+oc get rollout bookinfo-a bookinfo-b \
   -n canary-mesh-multi-bookinfo
+```
 
+Both should be Healthy. Bookinfo A remains parked for the entire demo.
+
+### 4. Start the canary demo
+
+```bash
+bash scripts/start-canary-mesh-multi-bookinfo.sh
+```
+
+Only **Bookinfo B** is changed and exercised. Bookinfo A is verified to remain at
+its stable baseline.
+
+Bookinfo B progresses through:
+
+```text
+90% stable / 10% canary
+75% stable / 25% canary
+50% stable / 50% canary
+25% stable / 75% canary
+0% stable / 100% canary
+```
+
+with an analysis gate after every traffic step.
+
+### 5. In another terminal, watch Bookinfo B
+
+```bash
 oc argo rollouts get rollout bookinfo-b \
   -n canary-mesh-multi-bookinfo \
   --watch
 ```
 
-During the demo, Bookinfo A should remain Healthy while Bookinfo B progresses
-through its canary steps.
+Bookinfo A may also be inspected independently:
 
-Sample both external routes:
+```bash
+oc argo rollouts get rollout bookinfo-a \
+  -n canary-mesh-multi-bookinfo
+```
+
+It should remain Healthy at 100% stable / 0% canary.
+
+### 6. Generate and show traffic distribution
+
+While Bookinfo B is progressing, run:
 
 ```bash
 REQUESTS_A=20 REQUESTS_B=200 \
@@ -260,26 +306,82 @@ bash scripts/sample-canary-mesh-multi-bookinfo.sh
 Expected behavior:
 
 ```text
-Bookinfo A: stable=100% canary=0%, black-star responses only
-Bookinfo B: response distribution follows the active Rollout weight
+Bookinfo A: stays 100% stable / 0% canary, black-star responses only
+Bookinfo B: distribution follows the active Rollout weight
 ```
 
-At Bookinfo B's final 100% candidate pause:
+The traffic split occurs only once, at the Bookinfo B productpage boundary.
+Every request selected for the canary path remains on the complete Bookinfo B
+canary track.
+
+### 7. Optionally verify the mesh data plane
+
+```bash
+bash scripts/check-canary-mesh-multi-bookinfo-dataplane.sh
+```
+
+This validates the two independent Rollouts, both application tracks, the shared
+Istio ingress gateway, both external Routes, the VirtualServices, sidecars,
+endpoints, and Bookinfo B analysis infrastructure.
+
+### 8. Promote Bookinfo B at the final pause
+
+When Bookinfo B reaches its final 100% candidate manual pause, run:
 
 ```bash
 bash scripts/promote-canary-mesh-multi-bookinfo.sh
 ```
 
-Promotion affects only `Rollout/bookinfo-b`.
+Promotion affects only `Rollout/bookinfo-b`. The verified candidate becomes the
+new stable ReplicaSet and Istio routing is normalized back to stable=100% /
+canary=0%.
 
-Reset the complete demo for another run:
+### 9. After the demo, reset and clean for the next run
 
 ```bash
 bash scripts/prepare-canary-mesh-multi-bookinfo.sh
 ```
 
-`prepare` restores both Rollouts to their baseline, although under the normal demo
-workflow Bookinfo A should already be there.
+This restores both Rollouts to their declared baseline and, by default, removes
+completed Rollout history so the Argo CD tree is ready for the next
+demonstration.
+
+### Presenter quick sequence
+
+For the actual audience-facing demo, the command sequence is:
+
+```bash
+bash scripts/deploy-canary-mesh-multi-bookinfo.sh
+bash scripts/prepare-canary-mesh-multi-bookinfo.sh
+bash scripts/start-canary-mesh-multi-bookinfo.sh
+
+# While Bookinfo B progresses:
+oc argo rollouts get rollout bookinfo-b \
+  -n canary-mesh-multi-bookinfo \
+  --watch
+
+REQUESTS_A=20 REQUESTS_B=200 \
+bash scripts/sample-canary-mesh-multi-bookinfo.sh
+
+# Optional validation:
+bash scripts/check-canary-mesh-multi-bookinfo-dataplane.sh
+
+# At the final 100% candidate pause:
+bash scripts/promote-canary-mesh-multi-bookinfo.sh
+
+# After the demo:
+bash scripts/prepare-canary-mesh-multi-bookinfo.sh
+```
+
+The operational meaning is:
+
+```text
+deploy  = reconcile infrastructure and applications
+prepare = establish/reset the clean 100/0 baseline
+start   = create/resume and exercise only the Bookinfo B candidate
+promote = approve the final Bookinfo B candidate
+prepare = reset and clean history for the next run
+```
 
 ## Idempotency
 
