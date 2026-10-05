@@ -2,7 +2,8 @@
 set -Eeuo pipefail
 
 NAMESPACE="${NAMESPACE:-canary-mesh-multi-bookinfo}"
-ROLLOUT_NAME="${ROLLOUT_NAME:-bookinfo-b}"
+A_ROLLOUT="${A_ROLLOUT:-bookinfo-a}"
+B_ROLLOUT="${B_ROLLOUT:-bookinfo-b}"
 DEMO_NAME="${DEMO_NAME:-canary-mesh-multi-bookinfo}"
 BLACKBOX_APP="${BLACKBOX_APP:-bookinfo-b-blackbox}"
 GATEWAY_COMPONENT="${GATEWAY_COMPONENT:-canary-mesh-multi-bookinfo-ingressgateway}"
@@ -28,16 +29,21 @@ ambient="$(oc get namespace "$NAMESPACE" -o jsonpath='{.metadata.labels.istio\.i
 pass "Namespace is enrolled for OSSM sidecar mode"
 
 required_resources=(
-  "rollout.argoproj.io/${ROLLOUT_NAME}"
+  "rollout.argoproj.io/${A_ROLLOUT}"
+  "rollout.argoproj.io/${B_ROLLOUT}"
   "virtualservice.networking.istio.io/bookinfo-a"
   "virtualservice.networking.istio.io/bookinfo-b"
   "gateway.networking.istio.io/${DEMO_NAME}-gateway"
   "route.route.openshift.io/bookinfo-a"
   "route.route.openshift.io/bookinfo-b"
-  "service/bookinfo-a-productpage"
-  "service/bookinfo-a-details"
-  "service/bookinfo-a-reviews"
-  "service/bookinfo-a-ratings"
+  "service/bookinfo-a-productpage-stable"
+  "service/bookinfo-a-productpage-canary"
+  "service/bookinfo-a-details-stable"
+  "service/bookinfo-a-details-canary"
+  "service/bookinfo-a-reviews-stable"
+  "service/bookinfo-a-reviews-canary"
+  "service/bookinfo-a-ratings-stable"
+  "service/bookinfo-a-ratings-canary"
   "service/bookinfo-b-productpage-stable"
   "service/bookinfo-b-productpage-canary"
   "service/bookinfo-b-details-stable"
@@ -47,10 +53,12 @@ required_resources=(
   "service/bookinfo-b-ratings-stable"
   "service/bookinfo-b-ratings-canary"
   "service/istio-ingressgateway"
-  "deployment/bookinfo-a-productpage"
-  "deployment/bookinfo-a-details"
-  "deployment/bookinfo-a-reviews"
-  "deployment/bookinfo-a-ratings"
+  "deployment/bookinfo-a-details-stable"
+  "deployment/bookinfo-a-details-canary"
+  "deployment/bookinfo-a-reviews-stable"
+  "deployment/bookinfo-a-reviews-canary"
+  "deployment/bookinfo-a-ratings-stable"
+  "deployment/bookinfo-a-ratings-canary"
   "deployment/bookinfo-b-details-stable"
   "deployment/bookinfo-b-details-canary"
   "deployment/bookinfo-b-reviews-stable"
@@ -78,7 +86,28 @@ while (( SECONDS < deadline )); do
   sleep "$POLL_SECONDS"
 done
 (( SECONDS < deadline )) || die "Timed out waiting for multi-Bookinfo mesh resources"
-pass "Required routing, application, and monitoring resources exist"
+pass "Required routing, Rollout, application, and monitoring resources exist"
+
+# The previous revision of this demo modelled Bookinfo A with ordinary
+# Deployments/Services. Those resources must be pruned after converting A to its
+# own Rollout, otherwise the namespace no longer represents two symmetric
+# application-level Rollouts.
+legacy_a_resources=(
+  "service/bookinfo-a-productpage"
+  "service/bookinfo-a-details"
+  "service/bookinfo-a-reviews"
+  "service/bookinfo-a-ratings"
+  "deployment/bookinfo-a-productpage"
+  "deployment/bookinfo-a-details"
+  "deployment/bookinfo-a-reviews"
+  "deployment/bookinfo-a-ratings"
+)
+for resource in "${legacy_a_resources[@]}"; do
+  if oc get "$resource" -n "$NAMESPACE" >/dev/null 2>&1; then
+    die "Legacy static Bookinfo A resource still exists after Rollout conversion: ${resource}"
+  fi
+done
+pass "Legacy static Bookinfo A resources are pruned"
 
 gateway_component="$(
   oc get gateway.networking.istio.io "${DEMO_NAME}-gateway" -n "$NAMESPACE" -o json |
@@ -89,7 +118,9 @@ gateway_component="$(
 pass "Shared gateway is isolated to component=${GATEWAY_COMPONENT}"
 
 for deployment in \
-  bookinfo-a-productpage bookinfo-a-details bookinfo-a-reviews bookinfo-a-ratings \
+  bookinfo-a-details-stable bookinfo-a-details-canary \
+  bookinfo-a-reviews-stable bookinfo-a-reviews-canary \
+  bookinfo-a-ratings-stable bookinfo-a-ratings-canary \
   bookinfo-b-details-stable bookinfo-b-details-canary \
   bookinfo-b-reviews-stable bookinfo-b-reviews-canary \
   bookinfo-b-ratings-stable bookinfo-b-ratings-canary \
@@ -98,7 +129,7 @@ do
   oc rollout status "deployment/${deployment}" -n "$NAMESPACE" --timeout="${TIMEOUT_SECONDS}s" >/dev/null ||
     die "Deployment ${deployment} did not become Available"
 done
-pass "Bookinfo A and Bookinfo B downstream Deployments are Available"
+pass "Both Bookinfo stable/canary downstream stacks are Available"
 
 check_selector_sidecars() {
   local selector="$1" label="$2" json total with_proxy ready_with_proxy
@@ -143,7 +174,9 @@ done
 pass "Both Bookinfo applications have Ready Istio proxies"
 
 for service in \
-  bookinfo-a-productpage bookinfo-a-details bookinfo-a-reviews bookinfo-a-ratings \
+  bookinfo-a-details-stable bookinfo-a-details-canary \
+  bookinfo-a-reviews-stable bookinfo-a-reviews-canary \
+  bookinfo-a-ratings-stable bookinfo-a-ratings-canary \
   bookinfo-b-details-stable bookinfo-b-details-canary \
   bookinfo-b-reviews-stable bookinfo-b-reviews-canary \
   bookinfo-b-ratings-stable bookinfo-b-ratings-canary \
@@ -152,16 +185,27 @@ do
   addresses="$(oc get endpoints "$service" -n "$NAMESPACE" -o jsonpath='{.subsets[*].addresses[*].ip}' 2>/dev/null || true)"
   [[ -n "$addresses" ]] || die "Service ${NAMESPACE}/${service} has no ready endpoint"
 done
-pass "Static and stable/canary downstream Services have ready endpoints"
+pass "Both stable/canary downstream stacks have ready endpoints"
 
-a_host="$(oc get virtualservice.networking.istio.io bookinfo-a -n "$NAMESPACE" -o jsonpath='{.spec.http[?(@.name=="primary")].route[0].destination.host}')"
-[[ "$a_host" == "bookinfo-a-productpage" ]] || die "Bookinfo A VirtualService destination is ${a_host:-missing}"
-
+a_stable="$(oc get virtualservice.networking.istio.io bookinfo-a -n "$NAMESPACE" -o jsonpath='{.spec.http[?(@.name=="primary")].route[0].destination.host}')"
+a_canary="$(oc get virtualservice.networking.istio.io bookinfo-a -n "$NAMESPACE" -o jsonpath='{.spec.http[?(@.name=="primary")].route[1].destination.host}')"
 b_stable="$(oc get virtualservice.networking.istio.io bookinfo-b -n "$NAMESPACE" -o jsonpath='{.spec.http[?(@.name=="primary")].route[0].destination.host}')"
 b_canary="$(oc get virtualservice.networking.istio.io bookinfo-b -n "$NAMESPACE" -o jsonpath='{.spec.http[?(@.name=="primary")].route[1].destination.host}')"
+[[ "$a_stable" == "bookinfo-a-productpage-stable" ]] || die "Bookinfo A stable destination is ${a_stable:-missing}"
+[[ "$a_canary" == "bookinfo-a-productpage-canary" ]] || die "Bookinfo A canary destination is ${a_canary:-missing}"
 [[ "$b_stable" == "bookinfo-b-productpage-stable" ]] || die "Bookinfo B stable destination is ${b_stable:-missing}"
 [[ "$b_canary" == "bookinfo-b-productpage-canary" ]] || die "Bookinfo B canary destination is ${b_canary:-missing}"
-pass "Bookinfo A is static and Bookinfo B points at Rollout stable/canary productpage Services"
+pass "Each Bookinfo VirtualService points only at its own Rollout Services"
+
+for instance in bookinfo-a bookinfo-b; do
+  rollout_stable="$(oc get rollout "$instance" -n "$NAMESPACE" -o jsonpath='{.spec.strategy.canary.stableService}' 2>/dev/null || true)"
+  rollout_canary="$(oc get rollout "$instance" -n "$NAMESPACE" -o jsonpath='{.spec.strategy.canary.canaryService}' 2>/dev/null || true)"
+  [[ "$rollout_stable" == "${instance}-productpage-stable" ]] ||
+    die "${instance} Rollout stableService is ${rollout_stable:-missing}"
+  [[ "$rollout_canary" == "${instance}-productpage-canary" ]] ||
+    die "${instance} Rollout canaryService is ${rollout_canary:-missing}"
+done
+pass "Bookinfo A and Bookinfo B have independent stable/canary Rollout Services"
 
 route_a="$(oc get route bookinfo-a -n "$NAMESPACE" -o jsonpath='{.spec.host}')"
 route_b="$(oc get route bookinfo-b -n "$NAMESPACE" -o jsonpath='{.spec.host}')"

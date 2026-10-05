@@ -5,7 +5,9 @@ NAMESPACE="${NAMESPACE:-canary-mesh-multi-bookinfo}"
 ARGOCD_NAMESPACE="${ARGOCD_NAMESPACE:-openshift-gitops}"
 B_APP="${B_APP:-canary-mesh-multi-bookinfo-b}"
 APP_NAME="$B_APP"
-ROLLOUT_NAME="${ROLLOUT_NAME:-bookinfo-b}"
+A_ROLLOUT="${A_ROLLOUT:-bookinfo-a}"
+B_ROLLOUT="${B_ROLLOUT:-bookinfo-b}"
+ROLLOUT_NAME="$B_ROLLOUT"
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-900}"
 POLL_SECONDS="${POLL_SECONDS:-5}"
 ROLLOUT_FILE="canary-mesh-multi-bookinfo/bookinfo-b/rollout.yaml"
@@ -47,6 +49,28 @@ git fetch origin "$branch"
 [[ "$(git rev-parse HEAD)" == "$(git rev-parse "origin/${branch}")" ]] ||
   die "Local branch is not synchronized with origin/${branch}"
 
+assert_bookinfo_a_parked() {
+  local phase stable current marker details reviews ratings stable_weight canary_weight
+  phase="$(oc get rollout "$A_ROLLOUT" -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+  stable="$(oc get rollout "$A_ROLLOUT" -n "$NAMESPACE" -o jsonpath='{.status.stableRS}' 2>/dev/null || true)"
+  current="$(oc get rollout "$A_ROLLOUT" -n "$NAMESPACE" -o jsonpath='{.status.currentPodHash}' 2>/dev/null || true)"
+  marker="$(oc get rollout "$A_ROLLOUT" -n "$NAMESPACE" -o jsonpath='{.spec.template.metadata.annotations.demo-bookinfo-revision}' 2>/dev/null || true)"
+  details="$(oc get rollout "$A_ROLLOUT" -n "$NAMESPACE" -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="DETAILS_HOSTNAME")].value}' 2>/dev/null || true)"
+  reviews="$(oc get rollout "$A_ROLLOUT" -n "$NAMESPACE" -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="REVIEWS_HOSTNAME")].value}' 2>/dev/null || true)"
+  ratings="$(oc get rollout "$A_ROLLOUT" -n "$NAMESPACE" -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="RATINGS_HOSTNAME")].value}' 2>/dev/null || true)"
+  stable_weight="$(oc get virtualservice.networking.istio.io bookinfo-a -n "$NAMESPACE" -o jsonpath='{.spec.http[?(@.name=="primary")].route[0].weight}' 2>/dev/null || true)"
+  canary_weight="$(oc get virtualservice.networking.istio.io bookinfo-a -n "$NAMESPACE" -o jsonpath='{.spec.http[?(@.name=="primary")].route[1].weight}' 2>/dev/null || true)"
+  [[ "$phase" == "Healthy" && -n "$stable" && "$stable" == "$current" &&
+     "$marker" == "bookinfo-a-baseline-stable" &&
+     "$details" == "bookinfo-a-details-stable" &&
+     "$reviews" == "bookinfo-a-reviews-stable" &&
+     "$ratings" == "bookinfo-a-ratings-stable" &&
+     "$stable_weight" == "100" && "$canary_weight" == "0" ]] ||
+    die "Bookinfo A Rollout is not parked at its baseline; run scripts/prepare-canary-mesh-multi-bookinfo.sh"
+}
+
+assert_bookinfo_a_parked
+
 candidate_spec_in_git() {
   grep -q 'demo-bookinfo-revision: "bookinfo-b-candidate-' "$ROLLOUT_FILE" &&
   grep -q 'track: canary' "$ROLLOUT_FILE" &&
@@ -84,6 +108,7 @@ if [[ "$marker" == bookinfo-b-candidate-* ]]; then
        "$ratings" == "bookinfo-b-ratings-canary" ]] ||
       die "Promoted Bookinfo B candidate is not isolated to its canary downstream stack"
     TIMEOUT_SECONDS="$TIMEOUT_SECONDS" bash scripts/check-canary-mesh-multi-bookinfo-dataplane.sh
+    assert_bookinfo_a_parked
     host_a="$(oc get route bookinfo-a -n "$NAMESPACE" -o jsonpath='{.spec.host}')"
     body_a="$(curl -sk "https://${host_a}/productpage" || true)"
     grep -q 'text-black-500' <<<"$body_a" || die "Bookinfo A is not healthy while verifying an already-promoted Bookinfo B"
@@ -180,15 +205,16 @@ successful="$(
 )"
 (( successful >= 5 )) || die "Expected five Successful Bookinfo B AnalysisRuns; found ${successful}"
 
+assert_bookinfo_a_parked
 host_a="$(oc get route bookinfo-a -n "$NAMESPACE" -o jsonpath='{.spec.host}')"
 body_a="$(curl -sk "https://${host_a}/productpage" || true)"
-grep -q 'text-black-500' <<<"$body_a" || die "Bookinfo A changed or became unhealthy during Bookinfo B rollout"
+grep -q 'text-black-500' <<<"$body_a" || die "Bookinfo A Rollout left its baseline route during Bookinfo B rollout"
 
 echo
 oc argo rollouts get rollout "$ROLLOUT_NAME" -n "$NAMESPACE"
 echo
 echo "All Bookinfo B canary gates passed. Traffic is 100% candidate at the final manual pause."
-echo "Bookinfo A remained static throughout the rollout."
+echo "Bookinfo A Rollout remained parked at its 100/0 baseline throughout the rollout."
 echo "Repeated start invocations reuse candidate ${marker}; they do not create another revision."
 echo "Sample both routes with: REQUESTS_B=200 bash scripts/sample-canary-mesh-multi-bookinfo.sh"
 echo "Promote with: bash scripts/promote-canary-mesh-multi-bookinfo.sh"

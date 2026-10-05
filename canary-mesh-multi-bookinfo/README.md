@@ -1,23 +1,20 @@
 # Multi-Bookinfo canary with OpenShift Service Mesh
 
-`canary-mesh-multi-bookinfo` demonstrates two complete Bookinfo applications in
-the **same namespace**, each with a distinct external OpenShift Route.
+`canary-mesh-multi-bookinfo` demonstrates **two independent complete Bookinfo
+applications in the same namespace**, each exposed through its own external
+OpenShift Route and each represented by its own Argo Rollout.
 
 The independence boundary is the complete application:
 
-- **Bookinfo A** is one static application.
-- **Bookinfo B** is one independently deployable application and is the only
-  application managed by Argo Rollouts for progressive delivery.
+- **Bookinfo A** has its own `Rollout/bookinfo-a`.
+- **Bookinfo B** has its own `Rollout/bookinfo-b`.
+- Only **Bookinfo B** is exercised by the demo workflow.
+- Bookinfo A remains parked at its stable baseline throughout the demonstration.
 
 The services inside a Bookinfo application are not independent rollout units.
-
-The GitOps boundary follows the same model:
-
-- `canary-mesh-multi-bookinfo-a` manages the complete static Bookinfo A.
-- `canary-mesh-multi-bookinfo-b` manages the complete Bookinfo B progressive-delivery stack.
-- `canary-mesh-multi-bookinfo-shared` owns only shared namespace/ingress/monitoring infrastructure.
-
-The shared Argo CD Application is infrastructure, not a third Bookinfo application.
+Traffic is split once, at that Bookinfo application's productpage boundary, and
+the selected productpage revision stays on its matching downstream stable or
+canary track.
 
 ## Architecture
 
@@ -32,85 +29,98 @@ The shared Argo CD Application is infrastructure, not a third Bookinfo applicati
                  |                                 |
          VirtualService A                  VirtualService B
                  |                                 |
-          BOOKINFO A STATIC                BOOKINFO B ROLLOUT
-                 |                          /              \
-                 |                     stable              canary
-                 |                       |                   |
-       productpage-a              productpage-b       productpage-b
-        /          \                 /      \             /      \
-   details-a     reviews-a      details   reviews      details   reviews
-                    |                       |                       |
-                ratings-a               ratings                 ratings
+          Rollout bookinfo-a                Rollout bookinfo-b
+          parked at 100/0                  exercised by demo
+             /      \                         /      \
+        stable      canary                 stable    canary
+          |            |                     |          |
+      complete A    complete A           complete B  complete B
+      stable stack  canary stack         stable stack canary stack
 ```
 
 Both routes target the same dedicated Istio ingress gateway Service. The two
-VirtualServices remain disjoint by matching the OpenShift-generated route
-authority:
+VirtualServices are isolated by the OpenShift-generated route authority:
 
 ```text
 bookinfo-a-canary-mesh-multi-bookinfo.<apps-domain>
 bookinfo-b-canary-mesh-multi-bookinfo.<apps-domain>
 ```
 
-## Isolation model
+## One Rollout per Bookinfo
 
-Every workload and Service carries an application-instance identity:
+Each Bookinfo application owns exactly one front-door Rollout:
 
 ```text
-app.kubernetes.io/instance=bookinfo-a
+Rollout/bookinfo-a
+  stableService -> bookinfo-a-productpage-stable
+  canaryService -> bookinfo-a-productpage-canary
+
+Rollout/bookinfo-b
+  stableService -> bookinfo-b-productpage-stable
+  canaryService -> bookinfo-b-productpage-canary
 ```
 
-or:
+The Rollout does not independently control `details`, `reviews`, and `ratings`.
+Instead, each productpage revision points to the matching complete downstream
+track.
+
+### Bookinfo A
+
+Bookinfo A is fully rollout-capable but is deliberately **not exercised** by the
+demo scripts.
+
+Its baseline path is:
 
 ```text
-app.kubernetes.io/instance=bookinfo-b
+bookinfo-a-productpage-stable
+  -> bookinfo-a-details-stable
+  -> bookinfo-a-reviews-stable (v2 / black stars)
+       -> bookinfo-a-ratings-stable
 ```
 
-Bookinfo B additionally uses `track=stable|canary` for its downstream stacks.
-
-This prevents a Service in one Bookinfo application from selecting pods from the
-other application even though both applications share the same namespace.
-
-## Bookinfo A
-
-Bookinfo A is a conventional Argo CD-managed application:
+Its candidate path is already declared and isolated:
 
 ```text
-bookinfo-a-productpage
-  -> bookinfo-a-details
-  -> bookinfo-a-reviews (v2 / black stars)
-       -> bookinfo-a-ratings
+bookinfo-a-productpage-canary
+  -> bookinfo-a-details-canary
+  -> bookinfo-a-reviews-canary (v3 / red stars)
+       -> bookinfo-a-ratings-canary
 ```
 
-Its route and traffic do not change during the Bookinfo B rollout.
-
-## Bookinfo B
-
-Bookinfo B uses one front-door Argo Rollout. Argo Rollouts owns the
-stable/canary productpage ReplicaSets and the traffic weights in
-`VirtualService/bookinfo-b`.
-
-The productpage revision determines the entire downstream application track:
+During this demo, Bookinfo A must remain:
 
 ```text
-Bookinfo B stable:
-productpage
+phase == Healthy
+stableRS == currentPodHash
+marker == bookinfo-a-baseline-stable
+stable traffic == 100%
+canary traffic == 0%
+```
+
+Bookinfo A's strategy is intentionally guarded with manual pauses. A template
+change does not automatically drive its traffic through the canary sequence.
+
+### Bookinfo B
+
+Bookinfo B is the Rollout exercised by the demo.
+
+Stable path:
+
+```text
+bookinfo-b-productpage-stable
   -> bookinfo-b-details-stable
   -> bookinfo-b-reviews-stable (v2 / black stars)
        -> bookinfo-b-ratings-stable
+```
 
-Bookinfo B canary:
-productpage
+Canary path:
+
+```text
+bookinfo-b-productpage-canary
   -> bookinfo-b-details-canary
   -> bookinfo-b-reviews-canary (v3 / red stars)
        -> bookinfo-b-ratings-canary
 ```
-
-There are deliberately **not** four independent Rollout CRs. Traffic is split
-once at the Bookinfo B application boundary, so a request is never intentionally
-mixed between stable and canary downstream tracks.
-
-## Canary sequence
 
 Bookinfo B progresses through:
 
@@ -123,18 +133,65 @@ Bookinfo B progresses through:
 manual approval
 ```
 
-The candidate analysis probes Bookinfo B's canary-only productpage Service and
-requires HTTP success, Bookinfo page content, reviews-v3 red stars, and Istio
-metrics proving that `details-canary`, `reviews-canary`, and `ratings-canary`
-were reached.
+Its AnalysisTemplate probes the candidate-only productpage Service and checks
+HTTP success, rendered Bookinfo content, reviews-v3 red stars, and Istio metrics
+showing that the candidate `details`, `reviews`, and `ratings` workloads were
+actually reached.
 
-Bookinfo A is not part of those traffic weights.
+## Isolation model
+
+Every workload and Service carries the application identity:
+
+```text
+app.kubernetes.io/instance=bookinfo-a
+```
+
+or:
+
+```text
+app.kubernetes.io/instance=bookinfo-b
+```
+
+Both applications additionally use:
+
+```text
+track=stable
+```
+
+or:
+
+```text
+track=canary
+```
+
+for their downstream application tracks.
+
+This prevents a Service from one Bookinfo application from selecting pods from
+the other application even though both live in the same namespace.
+
+## GitOps ownership
+
+The GitOps boundary matches the application independence boundary:
+
+- `canary-mesh-multi-bookinfo-a` owns Bookinfo A and `Rollout/bookinfo-a`.
+- `canary-mesh-multi-bookinfo-b` owns Bookinfo B and `Rollout/bookinfo-b`.
+- `canary-mesh-multi-bookinfo-shared` owns only the common namespace, ingress
+  gateway, Gateway, and shared Istio proxy monitoring.
+
+The A and B Argo CD Applications both ignore the runtime fields owned by Argo
+Rollouts:
+
+- `rollouts-pod-template-hash` on their stable and canary productpage Services;
+- the runtime weights on their own `VirtualService` `primary` route.
+
+This allows the two Rollout controllers to operate independently without Argo CD
+self-heal fighting their runtime traffic state.
 
 ## Prerequisites
 
 The demo does **not** install or reconcile OpenShift Service Mesh.
 
-It requires the same prerequisites as `canary-mesh-bookinfo`:
+It requires the same platform prerequisites as `canary-mesh-bookinfo`:
 
 - OpenShift Service Mesh 3.4 or newer;
 - Sail `Istio/default` and `IstioCNI/default` Ready;
@@ -153,13 +210,32 @@ bash scripts/prepare-canary-mesh-multi-bookinfo.sh
 bash scripts/start-canary-mesh-multi-bookinfo.sh
 ```
 
-Observe Bookinfo B:
+`deploy` reconciles both Rollout-capable Bookinfo applications and the shared
+infrastructure without changing an active rollout state.
+
+`prepare` establishes the known initial condition for **both** Rollouts:
+
+```text
+Bookinfo A = Healthy, stable=100%, canary=0%
+Bookinfo B = Healthy, stable=100%, canary=0%
+```
+
+`start` mutates and exercises **only Bookinfo B**. It refuses to begin if Bookinfo
+A is not still parked at its baseline.
+
+Observe both Rollouts:
 
 ```bash
+oc argo rollouts get rollout bookinfo-a \
+  -n canary-mesh-multi-bookinfo
+
 oc argo rollouts get rollout bookinfo-b \
   -n canary-mesh-multi-bookinfo \
   --watch
 ```
+
+During the demo, Bookinfo A should remain Healthy while Bookinfo B progresses
+through its canary steps.
 
 Sample both external routes:
 
@@ -170,8 +246,10 @@ bash scripts/sample-canary-mesh-multi-bookinfo.sh
 
 Expected behavior:
 
-- Bookinfo A remains 100% static / black-star reviews.
-- Bookinfo B follows the current stable/canary weight.
+```text
+Bookinfo A: stable=100% canary=0%, black-star responses only
+Bookinfo B: response distribution follows the active Rollout weight
+```
 
 At Bookinfo B's final 100% candidate pause:
 
@@ -179,38 +257,35 @@ At Bookinfo B's final 100% candidate pause:
 bash scripts/promote-canary-mesh-multi-bookinfo.sh
 ```
 
-Reset Bookinfo B for another demo while keeping Bookinfo A untouched:
+Promotion affects only `Rollout/bookinfo-b`.
+
+Reset the complete demo for another run:
 
 ```bash
 bash scripts/prepare-canary-mesh-multi-bookinfo.sh
 ```
 
+`prepare` restores both Rollouts to their baseline, although under the normal demo
+workflow Bookinfo A should already be there.
+
 ## Idempotency
 
-The operational scripts follow the same idempotency contract as
-`canary-mesh-bookinfo`.
+The operational scripts are designed to converge on their requested state.
 
-`deploy` may be rerun without forcing Bookinfo B to baseline.
+`deploy` may be rerun without manufacturing a new Rollout revision or forcing an
+active Rollout back to baseline.
 
-`prepare` may be rerun at baseline, during the rollout, at the final pause, or
-after promotion. It restores Bookinfo B to:
+`prepare` may be rerun at baseline, during Bookinfo B's rollout, at the final
+pause, or after promotion. It restores and verifies both A and B baselines and
+creates a Git commit only when the declarative baseline actually changed.
 
-```text
-phase == Healthy
-stableRS == currentPodHash
-marker == bookinfo-b-baseline-stable
-Bookinfo B stable routing == 100%
-Bookinfo B canary routing == 0%
-```
+`start` operates only on Bookinfo B and reuses an already-declared Bookinfo B
+candidate instead of creating another timestamped revision.
 
-and also verifies that Bookinfo A remained healthy.
+`promote` operates only on Bookinfo B and treats an already-promoted B candidate
+as a verified no-op.
 
-`start` reuses an already-declared Bookinfo B candidate instead of creating
-another timestamped candidate.
-
-`promote` treats an already-promoted Bookinfo B candidate as a verified no-op.
-
-The scripts never silently commit unrelated tracked Git changes.
+The scripts refuse to silently commit unrelated tracked Git changes.
 
 ## External URLs
 
@@ -228,13 +303,16 @@ https://<bookinfo-a-host>/productpage
 https://<bookinfo-b-host>/productpage
 ```
 
-The current VirtualServices intentionally expose `/productpage` and the
-supporting Bookinfo paths rather than bare `/`.
+The current VirtualServices expose `/productpage` and the supporting Bookinfo
+paths rather than bare `/`.
 
 ## Useful checks
 
 ```bash
 bash scripts/check-canary-mesh-multi-bookinfo-dataplane.sh
+
+oc get rollout bookinfo-a bookinfo-b \
+  -n canary-mesh-multi-bookinfo
 
 oc get pods -n canary-mesh-multi-bookinfo \
   -L app.kubernetes.io/instance,app.kubernetes.io/name,track
@@ -243,9 +321,6 @@ oc get route bookinfo-a bookinfo-b \
   -n canary-mesh-multi-bookinfo
 
 oc get virtualservice bookinfo-a bookinfo-b \
-  -n canary-mesh-multi-bookinfo -o yaml
-
-oc get rollout bookinfo-b \
   -n canary-mesh-multi-bookinfo -o yaml
 
 oc get analysisrun \

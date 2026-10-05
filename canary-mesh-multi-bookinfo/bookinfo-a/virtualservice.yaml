@@ -33,6 +33,12 @@ spec:
             prefix: /api/v1/products
       route:
         - destination:
-            host: bookinfo-a-productpage
+            host: bookinfo-a-productpage-stable
             port:
               number: 9080
+          weight: 100
+        - destination:
+            host: bookinfo-a-productpage-canary
+            port:
+              number: 9080
+          weight: 0

@@ -12,6 +12,28 @@ spec:
   destination:
     server: https://kubernetes.default.svc
     namespace: canary-mesh-multi-bookinfo
+
+  # Argo Rollouts owns Bookinfo A's runtime hash selectors and traffic weights.
+  ignoreDifferences:
+    - group: ""
+      kind: Service
+      name: bookinfo-a-productpage-stable
+      namespace: canary-mesh-multi-bookinfo
+      jqPathExpressions:
+        - '.spec.selector."rollouts-pod-template-hash"'
+    - group: ""
+      kind: Service
+      name: bookinfo-a-productpage-canary
+      namespace: canary-mesh-multi-bookinfo
+      jqPathExpressions:
+        - '.spec.selector."rollouts-pod-template-hash"'
+    - group: networking.istio.io
+      kind: VirtualService
+      name: bookinfo-a
+      namespace: canary-mesh-multi-bookinfo
+      jqPathExpressions:
+        - '.spec.http[] | select(.name == "primary") | .route[].weight'
+
   syncPolicy:
     automated:
       prune: true
@@ -19,3 +41,4 @@ spec:
     syncOptions:
       - CreateNamespace=true
       - ApplyOutOfSyncOnly=true
+      - RespectIgnoreDifferences=true

@@ -19,11 +19,17 @@ host_a="$(oc get route bookinfo-a -n "$NAMESPACE" -o jsonpath='{.spec.host}')"
 host_b="$(oc get route bookinfo-b -n "$NAMESPACE" -o jsonpath='{.spec.host}')"
 [[ -n "$host_a" && -n "$host_b" && "$host_a" != "$host_b" ]] || die "Route hosts are missing or not distinct"
 
-weights="$(oc get virtualservice bookinfo-b -n "$NAMESPACE" -o jsonpath='stable={.spec.http[?(@.name=="primary")].route[0].weight}% canary={.spec.http[?(@.name=="primary")].route[1].weight}%' 2>/dev/null || true)"
+weights_a="$(oc get virtualservice bookinfo-a -n "$NAMESPACE" -o jsonpath='stable={.spec.http[?(@.name=="primary")].route[0].weight}% canary={.spec.http[?(@.name=="primary")].route[1].weight}%' 2>/dev/null || true)"
+weights_b="$(oc get virtualservice bookinfo-b -n "$NAMESPACE" -o jsonpath='stable={.spec.http[?(@.name=="primary")].route[0].weight}% canary={.spec.http[?(@.name=="primary")].route[1].weight}%' 2>/dev/null || true)"
+a_stable_weight="$(oc get virtualservice bookinfo-a -n "$NAMESPACE" -o jsonpath='{.spec.http[?(@.name=="primary")].route[0].weight}' 2>/dev/null || true)"
+a_canary_weight="$(oc get virtualservice bookinfo-a -n "$NAMESPACE" -o jsonpath='{.spec.http[?(@.name=="primary")].route[1].weight}' 2>/dev/null || true)"
+[[ "$a_stable_weight" == "100" && "$a_canary_weight" == "0" ]] ||
+  die "Bookinfo A Rollout is not parked at 100/0; run prepare before the demo"
 
-echo "Bookinfo A: static external route https://${host_a}/productpage"
-echo "Bookinfo B: canary external route https://${host_b}/productpage"
-echo "Bookinfo B VirtualService: ${weights:-unknown}"
+echo "Bookinfo A: independent Rollout, parked at baseline: https://${host_a}/productpage"
+echo "Bookinfo A VirtualService: ${weights_a:-unknown}"
+echo "Bookinfo B: independent Rollout, exercised by this demo: https://${host_b}/productpage"
+echo "Bookinfo B VirtualService: ${weights_b:-unknown}"
 echo
 
 tmp_a="$(mktemp)"
@@ -33,14 +39,16 @@ trap 'rm -f "$tmp_a" "$tmp_b"' EXIT
 for ((i=1; i<=REQUESTS_A; i++)); do
   body="$(curl -sk "https://${host_a}/productpage" || true)"
   if grep -q 'glyphicon glyphicon-star' <<<"$body" && grep -q 'text-black-500' <<<"$body"; then
-    echo static >>"$tmp_a"
+    echo stable >>"$tmp_a"
+  elif grep -q 'glyphicon glyphicon-star' <<<"$body" && grep -q 'text-red-500' <<<"$body"; then
+    echo unexpected-canary >>"$tmp_a"
   else
-    echo unexpected >>"$tmp_a"
+    echo unknown >>"$tmp_a"
   fi
 done
 
-echo "Bookinfo A distribution (${REQUESTS_A} requests; must remain static):"
-sort "$tmp_a" | uniq -c | awk -v n="$REQUESTS_A" '{printf "%8d  %-10s %6.2f%%\n", $1, $2, (100*$1/n)}'
+echo "Bookinfo A distribution (${REQUESTS_A} requests; its Rollout must remain 100% stable):"
+sort "$tmp_a" | uniq -c | awk -v n="$REQUESTS_A" '{printf "%8d  %-18s %6.2f%%\n", $1, $2, (100*$1/n)}'
 
 for ((i=1; i<=REQUESTS_B; i++)); do
   body="$(curl -sk "https://${host_b}/productpage" || true)"
@@ -55,7 +63,8 @@ done
 
 echo
 echo "Bookinfo B distribution (${REQUESTS_B} requests):"
-sort "$tmp_b" | uniq -c | awk -v n="$REQUESTS_B" '{printf "%8d  %-10s %6.2f%%\n", $1, $2, (100*$1/n)}'
+sort "$tmp_b" | uniq -c | awk -v n="$REQUESTS_B" '{printf "%8d  %-18s %6.2f%%\n", $1, $2, (100*$1/n)}'
 echo
-echo "Bookinfo A is an independent static application."
+echo "Both Bookinfo applications have independent Rollout CRs."
+echo "Only Bookinfo B is exercised by the demo; Bookinfo A remains parked at its stable baseline."
 echo "Every Bookinfo B canary-classified response enters the isolated Bookinfo B canary stack."

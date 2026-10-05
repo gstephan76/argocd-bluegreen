@@ -25,16 +25,18 @@ metadata:
 apiVersion: v1
 kind: Service
 metadata:
-  name: bookinfo-a-details
+  name: bookinfo-a-details-stable
   namespace: canary-mesh-multi-bookinfo
   labels:
     app.kubernetes.io/part-of: bookinfo
     app.kubernetes.io/instance: bookinfo-a
     app.kubernetes.io/name: details
+    track: stable
 spec:
   selector:
     app.kubernetes.io/instance: bookinfo-a
     app.kubernetes.io/name: details
+    track: stable
   ports:
     - name: http
       port: 9080
@@ -43,7 +45,7 @@ spec:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: bookinfo-a-details
+  name: bookinfo-a-details-stable
   namespace: canary-mesh-multi-bookinfo
 spec:
   replicas: 1
@@ -51,6 +53,7 @@ spec:
     matchLabels:
       app.kubernetes.io/instance: bookinfo-a
       app.kubernetes.io/name: details
+      track: stable
   template:
     metadata:
       annotations:
@@ -62,6 +65,7 @@ spec:
         app.kubernetes.io/instance: bookinfo-a
         app.kubernetes.io/name: details
         app.kubernetes.io/version: v1
+        track: stable
         sidecar.istio.io/inject: "true"
     spec:
       serviceAccountName: bookinfo-a-details
@@ -76,16 +80,18 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: bookinfo-a-ratings
+  name: bookinfo-a-details-canary
   namespace: canary-mesh-multi-bookinfo
   labels:
     app.kubernetes.io/part-of: bookinfo
     app.kubernetes.io/instance: bookinfo-a
-    app.kubernetes.io/name: ratings
+    app.kubernetes.io/name: details
+    track: canary
 spec:
   selector:
     app.kubernetes.io/instance: bookinfo-a
-    app.kubernetes.io/name: ratings
+    app.kubernetes.io/name: details
+    track: canary
   ports:
     - name: http
       port: 9080
@@ -94,7 +100,62 @@ spec:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: bookinfo-a-ratings
+  name: bookinfo-a-details-canary
+  namespace: canary-mesh-multi-bookinfo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: bookinfo-a
+      app.kubernetes.io/name: details
+      track: canary
+  template:
+    metadata:
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: /stats/prometheus
+        prometheus.io/port: "15090"
+      labels:
+        app.kubernetes.io/part-of: bookinfo
+        app.kubernetes.io/instance: bookinfo-a
+        app.kubernetes.io/name: details
+        app.kubernetes.io/version: v1
+        track: canary
+        sidecar.istio.io/inject: "true"
+    spec:
+      serviceAccountName: bookinfo-a-details
+      containers:
+        - name: details
+          image: quay.io/sail-dev/examples-bookinfo-details-v1:1.20.2
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 9080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: bookinfo-a-ratings-stable
+  namespace: canary-mesh-multi-bookinfo
+  labels:
+    app.kubernetes.io/part-of: bookinfo
+    app.kubernetes.io/instance: bookinfo-a
+    app.kubernetes.io/name: ratings
+    track: stable
+spec:
+  selector:
+    app.kubernetes.io/instance: bookinfo-a
+    app.kubernetes.io/name: ratings
+    track: stable
+  ports:
+    - name: http
+      port: 9080
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bookinfo-a-ratings-stable
   namespace: canary-mesh-multi-bookinfo
 spec:
   replicas: 1
@@ -102,6 +163,7 @@ spec:
     matchLabels:
       app.kubernetes.io/instance: bookinfo-a
       app.kubernetes.io/name: ratings
+      track: stable
   template:
     metadata:
       annotations:
@@ -113,6 +175,7 @@ spec:
         app.kubernetes.io/instance: bookinfo-a
         app.kubernetes.io/name: ratings
         app.kubernetes.io/version: v1
+        track: stable
         sidecar.istio.io/inject: "true"
     spec:
       serviceAccountName: bookinfo-a-ratings
@@ -127,16 +190,18 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: bookinfo-a-reviews
+  name: bookinfo-a-ratings-canary
   namespace: canary-mesh-multi-bookinfo
   labels:
     app.kubernetes.io/part-of: bookinfo
     app.kubernetes.io/instance: bookinfo-a
-    app.kubernetes.io/name: reviews
+    app.kubernetes.io/name: ratings
+    track: canary
 spec:
   selector:
     app.kubernetes.io/instance: bookinfo-a
-    app.kubernetes.io/name: reviews
+    app.kubernetes.io/name: ratings
+    track: canary
   ports:
     - name: http
       port: 9080
@@ -145,7 +210,62 @@ spec:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: bookinfo-a-reviews
+  name: bookinfo-a-ratings-canary
+  namespace: canary-mesh-multi-bookinfo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: bookinfo-a
+      app.kubernetes.io/name: ratings
+      track: canary
+  template:
+    metadata:
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: /stats/prometheus
+        prometheus.io/port: "15090"
+      labels:
+        app.kubernetes.io/part-of: bookinfo
+        app.kubernetes.io/instance: bookinfo-a
+        app.kubernetes.io/name: ratings
+        app.kubernetes.io/version: v1
+        track: canary
+        sidecar.istio.io/inject: "true"
+    spec:
+      serviceAccountName: bookinfo-a-ratings
+      containers:
+        - name: ratings
+          image: quay.io/sail-dev/examples-bookinfo-ratings-v1:1.20.2
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 9080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: bookinfo-a-reviews-stable
+  namespace: canary-mesh-multi-bookinfo
+  labels:
+    app.kubernetes.io/part-of: bookinfo
+    app.kubernetes.io/instance: bookinfo-a
+    app.kubernetes.io/name: reviews
+    track: stable
+spec:
+  selector:
+    app.kubernetes.io/instance: bookinfo-a
+    app.kubernetes.io/name: reviews
+    track: stable
+  ports:
+    - name: http
+      port: 9080
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bookinfo-a-reviews-stable
   namespace: canary-mesh-multi-bookinfo
 spec:
   replicas: 1
@@ -153,6 +273,7 @@ spec:
     matchLabels:
       app.kubernetes.io/instance: bookinfo-a
       app.kubernetes.io/name: reviews
+      track: stable
   template:
     metadata:
       annotations:
@@ -164,6 +285,7 @@ spec:
         app.kubernetes.io/instance: bookinfo-a
         app.kubernetes.io/name: reviews
         app.kubernetes.io/version: v2
+        track: stable
         sidecar.istio.io/inject: "true"
     spec:
       serviceAccountName: bookinfo-a-reviews
@@ -175,7 +297,7 @@ spec:
             - name: LOG_DIR
               value: /tmp/logs
             - name: RATINGS_HOSTNAME
-              value: bookinfo-a-ratings
+              value: bookinfo-a-ratings-stable
           ports:
             - name: http
               containerPort: 9080
@@ -193,16 +315,18 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: bookinfo-a-productpage
+  name: bookinfo-a-reviews-canary
   namespace: canary-mesh-multi-bookinfo
   labels:
     app.kubernetes.io/part-of: bookinfo
     app.kubernetes.io/instance: bookinfo-a
-    app.kubernetes.io/name: productpage
+    app.kubernetes.io/name: reviews
+    track: canary
 spec:
   selector:
     app.kubernetes.io/instance: bookinfo-a
-    app.kubernetes.io/name: productpage
+    app.kubernetes.io/name: reviews
+    track: canary
   ports:
     - name: http
       port: 9080
@@ -211,14 +335,15 @@ spec:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: bookinfo-a-productpage
+  name: bookinfo-a-reviews-canary
   namespace: canary-mesh-multi-bookinfo
 spec:
-  replicas: 2
+  replicas: 1
   selector:
     matchLabels:
       app.kubernetes.io/instance: bookinfo-a
-      app.kubernetes.io/name: productpage
+      app.kubernetes.io/name: reviews
+      track: canary
   template:
     metadata:
       annotations:
@@ -228,34 +353,31 @@ spec:
       labels:
         app.kubernetes.io/part-of: bookinfo
         app.kubernetes.io/instance: bookinfo-a
-        app.kubernetes.io/name: productpage
-        app.kubernetes.io/version: v1
+        app.kubernetes.io/name: reviews
+        app.kubernetes.io/version: v3
+        track: canary
         sidecar.istio.io/inject: "true"
     spec:
-      serviceAccountName: bookinfo-a-productpage
+      serviceAccountName: bookinfo-a-reviews
       containers:
-        - name: productpage
-          image: quay.io/sail-dev/examples-bookinfo-productpage-v1:1.20.2
+        - name: reviews
+          image: quay.io/sail-dev/examples-bookinfo-reviews-v3:1.20.2
           imagePullPolicy: IfNotPresent
           env:
-            - name: DETAILS_HOSTNAME
-              value: bookinfo-a-details
-            - name: REVIEWS_HOSTNAME
-              value: bookinfo-a-reviews
+            - name: LOG_DIR
+              value: /tmp/logs
             - name: RATINGS_HOSTNAME
-              value: bookinfo-a-ratings
+              value: bookinfo-a-ratings-canary
           ports:
             - name: http
               containerPort: 9080
-          readinessProbe:
-            httpGet:
-              path: /productpage
-              port: http
-            initialDelaySeconds: 2
-            periodSeconds: 5
           volumeMounts:
             - name: tmp
               mountPath: /tmp
+            - name: wlp-output
+              mountPath: /opt/ibm/wlp/output
       volumes:
         - name: tmp
+          emptyDir: {}
+        - name: wlp-output
           emptyDir: {}

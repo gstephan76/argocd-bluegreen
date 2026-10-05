@@ -7,7 +7,9 @@ SHARED_APP="${SHARED_APP:-canary-mesh-multi-bookinfo-shared}"
 A_APP="${A_APP:-canary-mesh-multi-bookinfo-a}"
 B_APP="${B_APP:-canary-mesh-multi-bookinfo-b}"
 APP_NAME="$B_APP"
-ROLLOUT_NAME="${ROLLOUT_NAME:-bookinfo-b}"
+A_ROLLOUT="${A_ROLLOUT:-bookinfo-a}"
+B_ROLLOUT="${B_ROLLOUT:-bookinfo-b}"
+ROLLOUT_NAME="$B_ROLLOUT"
 ROLLOUT_MANAGER="${ROLLOUT_MANAGER:-argo-rollout}"
 ROLLOUT_MANAGER_NAMESPACE="${ROLLOUT_MANAGER_NAMESPACE:-openshift-gitops}"
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-420}"
@@ -57,6 +59,7 @@ for asset in \
   canary-mesh-multi-bookinfo/shared/kustomization.yaml \
   canary-mesh-multi-bookinfo/bookinfo-a/kustomization.yaml \
   canary-mesh-multi-bookinfo/bookinfo-b/kustomization.yaml \
+  canary-mesh-multi-bookinfo/bookinfo-a/rollout.yaml \
   canary-mesh-multi-bookinfo/bookinfo-b/rollout.yaml \
   argocd/application-canary-mesh-multi-bookinfo-shared.yaml \
   argocd/application-canary-mesh-multi-bookinfo-a.yaml \
@@ -151,14 +154,14 @@ host_a="$(oc get route bookinfo-a -n "$NAMESPACE" -o jsonpath='{.spec.host}')"
 host_b="$(oc get route bookinfo-b -n "$NAMESPACE" -o jsonpath='{.spec.host}')"
 [[ -n "$host_a" && -n "$host_b" && "$host_a" != "$host_b" ]] || die "Route hosts are missing or not distinct"
 
-echo "==> Verifying static Bookinfo A through its ingress route"
+echo "==> Verifying Bookinfo A Rollout through its ingress route without changing rollout state"
 deadline=$((SECONDS + TIMEOUT_SECONDS))
 while (( SECONDS < deadline )); do
   body="$(curl -sk "https://${host_a}/productpage" || true)"
   if grep -q 'Book Details' <<<"$body" &&
      grep -q 'Book Reviews' <<<"$body" &&
      grep -q 'glyphicon glyphicon-star' <<<"$body" &&
-     grep -q 'text-black-500' <<<"$body"; then
+     { grep -q 'text-black-500' <<<"$body" || grep -q 'text-red-500' <<<"$body"; }; then
     break
   fi
   sleep "$POLL_SECONDS"
@@ -179,11 +182,13 @@ while (( SECONDS < deadline )); do
 done
 (( SECONDS < deadline )) || die "Bookinfo B did not become reachable through https://${host_b}/productpage"
 
-weights="$(oc get virtualservice.networking.istio.io bookinfo-b -n "$NAMESPACE" -o jsonpath='stable={.spec.http[?(@.name=="primary")].route[0].weight}% canary={.spec.http[?(@.name=="primary")].route[1].weight}%' 2>/dev/null || true)"
+weights_a="$(oc get virtualservice.networking.istio.io bookinfo-a -n "$NAMESPACE" -o jsonpath='stable={.spec.http[?(@.name=="primary")].route[0].weight}% canary={.spec.http[?(@.name=="primary")].route[1].weight}%' 2>/dev/null || true)"
+weights_b="$(oc get virtualservice.networking.istio.io bookinfo-b -n "$NAMESPACE" -o jsonpath='stable={.spec.http[?(@.name=="primary")].route[0].weight}% canary={.spec.http[?(@.name=="primary")].route[1].weight}%' 2>/dev/null || true)"
 
 echo
-echo "Bookinfo A (static): https://${host_a}/productpage"
-echo "Bookinfo B (canary): https://${host_b}/productpage"
-echo "Bookinfo B traffic: ${weights:-unknown}"
+echo "Bookinfo A (Rollout; not exercised by this demo): https://${host_a}/productpage"
+echo "Bookinfo B (Rollout; exercised by this demo): https://${host_b}/productpage"
+echo "Bookinfo A traffic: ${weights_a:-unknown}"
+echo "Bookinfo B traffic: ${weights_b:-unknown}"
 echo "Multi-Bookinfo demo reconciled idempotently."
 echo "Next: bash scripts/prepare-canary-mesh-multi-bookinfo.sh"
