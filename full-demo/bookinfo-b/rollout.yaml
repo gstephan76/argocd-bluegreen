@@ -15,7 +15,7 @@ spec:
   template:
     metadata:
       annotations:
-        demo-bookinfo-revision: "bookinfo-b-candidate-20261005T202310Z"
+        demo-bookinfo-revision: "bookinfo-b-baseline-stable"
         prometheus.io/scrape: 'true'
         prometheus.io/path: /stats/prometheus
         prometheus.io/port: '15090'
@@ -24,7 +24,7 @@ spec:
         app.kubernetes.io/instance: bookinfo-b
         app.kubernetes.io/name: productpage
         app.kubernetes.io/version: v1
-        track: canary
+        track: stable
         sidecar.istio.io/inject: 'true'
     spec:
       serviceAccountName: bookinfo-b-productpage
@@ -34,11 +34,11 @@ spec:
         imagePullPolicy: IfNotPresent
         env:
         - name: DETAILS_HOSTNAME
-          value: bookinfo-b-details-canary
+          value: bookinfo-b-details-stable
         - name: REVIEWS_HOSTNAME
-          value: bookinfo-b-reviews-canary
+          value: bookinfo-b-reviews-stable
         - name: RATINGS_HOSTNAME
-          value: bookinfo-b-ratings-canary
+          value: bookinfo-b-ratings-stable
         ports:
         - name: http
           containerPort: 9080
