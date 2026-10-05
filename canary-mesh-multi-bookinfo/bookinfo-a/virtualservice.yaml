@@ -1,7 +1,7 @@
 apiVersion: networking.istio.io/v1
 kind: VirtualService
 metadata:
-  name: bookinfo-a
+  name: bookinfo-a-rollout
   namespace: canary-mesh-multi-bookinfo
 spec:
   gateways:

@@ -27,7 +27,7 @@ canary track.
                  |                                 |
           external Route A                  external Route B
                  |                                 |
-         VirtualService A                  VirtualService B
+   VirtualService bookinfo-a-rollout       VirtualService bookinfo-b
                  |                                 |
           Rollout bookinfo-a                Rollout bookinfo-b
           parked at 100/0                  exercised by demo
@@ -179,7 +179,13 @@ The GitOps boundary matches the application independence boundary:
   gateway, Gateway, and shared Istio proxy monitoring.
 
 The A and B Argo CD Applications both ignore the runtime fields owned by Argo
-Rollouts:
+Rollouts. Bookinfo A deliberately uses `VirtualService/bookinfo-a-rollout`
+instead of reusing the historical static `VirtualService/bookinfo-a`. This makes
+the static-to-Rollout migration bootstrap-safe: the new weighted VirtualService
+is created with its declared 100/0 weights before Rollouts takes ownership, while
+the old static VirtualService is pruned.
+
+The ignored runtime fields are:
 
 - `rollouts-pod-template-hash` on their stable and canary productpage Services;
 - the runtime weights on their own `VirtualService` `primary` route.
@@ -320,7 +326,7 @@ oc get pods -n canary-mesh-multi-bookinfo \
 oc get route bookinfo-a bookinfo-b \
   -n canary-mesh-multi-bookinfo
 
-oc get virtualservice bookinfo-a bookinfo-b \
+oc get virtualservice bookinfo-a-rollout bookinfo-b \
   -n canary-mesh-multi-bookinfo -o yaml
 
 oc get analysisrun \

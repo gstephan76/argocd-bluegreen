@@ -3,6 +3,8 @@ kind: Rollout
 metadata:
   name: bookinfo-a
   namespace: canary-mesh-multi-bookinfo
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
 spec:
   replicas: 4
   revisionHistoryLimit: 3
@@ -61,7 +63,7 @@ spec:
       trafficRouting:
         istio:
           virtualService:
-            name: bookinfo-a
+            name: bookinfo-a-rollout
             routes:
               - primary
       # Bookinfo A is rollout-capable, but this demo never exercises it.

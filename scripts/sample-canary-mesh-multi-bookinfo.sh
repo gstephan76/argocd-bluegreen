@@ -2,6 +2,7 @@
 set -Eeuo pipefail
 
 NAMESPACE="${NAMESPACE:-canary-mesh-multi-bookinfo}"
+A_VIRTUALSERVICE="${A_VIRTUALSERVICE:-bookinfo-a-rollout}"
 REQUESTS_A="${REQUESTS_A:-20}"
 REQUESTS_B="${REQUESTS_B:-100}"
 
@@ -19,10 +20,10 @@ host_a="$(oc get route bookinfo-a -n "$NAMESPACE" -o jsonpath='{.spec.host}')"
 host_b="$(oc get route bookinfo-b -n "$NAMESPACE" -o jsonpath='{.spec.host}')"
 [[ -n "$host_a" && -n "$host_b" && "$host_a" != "$host_b" ]] || die "Route hosts are missing or not distinct"
 
-weights_a="$(oc get virtualservice bookinfo-a -n "$NAMESPACE" -o jsonpath='stable={.spec.http[?(@.name=="primary")].route[0].weight}% canary={.spec.http[?(@.name=="primary")].route[1].weight}%' 2>/dev/null || true)"
+weights_a="$(oc get virtualservice "$A_VIRTUALSERVICE" -n "$NAMESPACE" -o jsonpath='stable={.spec.http[?(@.name=="primary")].route[0].weight}% canary={.spec.http[?(@.name=="primary")].route[1].weight}%' 2>/dev/null || true)"
 weights_b="$(oc get virtualservice bookinfo-b -n "$NAMESPACE" -o jsonpath='stable={.spec.http[?(@.name=="primary")].route[0].weight}% canary={.spec.http[?(@.name=="primary")].route[1].weight}%' 2>/dev/null || true)"
-a_stable_weight="$(oc get virtualservice bookinfo-a -n "$NAMESPACE" -o jsonpath='{.spec.http[?(@.name=="primary")].route[0].weight}' 2>/dev/null || true)"
-a_canary_weight="$(oc get virtualservice bookinfo-a -n "$NAMESPACE" -o jsonpath='{.spec.http[?(@.name=="primary")].route[1].weight}' 2>/dev/null || true)"
+a_stable_weight="$(oc get virtualservice "$A_VIRTUALSERVICE" -n "$NAMESPACE" -o jsonpath='{.spec.http[?(@.name=="primary")].route[0].weight}' 2>/dev/null || true)"
+a_canary_weight="$(oc get virtualservice "$A_VIRTUALSERVICE" -n "$NAMESPACE" -o jsonpath='{.spec.http[?(@.name=="primary")].route[1].weight}' 2>/dev/null || true)"
 [[ "$a_stable_weight" == "100" && "$a_canary_weight" == "0" ]] ||
   die "Bookinfo A Rollout is not parked at 100/0; run prepare before the demo"
 

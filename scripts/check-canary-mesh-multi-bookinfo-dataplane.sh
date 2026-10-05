@@ -3,6 +3,7 @@ set -Eeuo pipefail
 
 NAMESPACE="${NAMESPACE:-canary-mesh-multi-bookinfo}"
 A_ROLLOUT="${A_ROLLOUT:-bookinfo-a}"
+A_VIRTUALSERVICE="${A_VIRTUALSERVICE:-bookinfo-a-rollout}"
 B_ROLLOUT="${B_ROLLOUT:-bookinfo-b}"
 DEMO_NAME="${DEMO_NAME:-canary-mesh-multi-bookinfo}"
 BLACKBOX_APP="${BLACKBOX_APP:-bookinfo-b-blackbox}"
@@ -31,7 +32,7 @@ pass "Namespace is enrolled for OSSM sidecar mode"
 required_resources=(
   "rollout.argoproj.io/${A_ROLLOUT}"
   "rollout.argoproj.io/${B_ROLLOUT}"
-  "virtualservice.networking.istio.io/bookinfo-a"
+  "virtualservice.networking.istio.io/${A_VIRTUALSERVICE}"
   "virtualservice.networking.istio.io/bookinfo-b"
   "gateway.networking.istio.io/${DEMO_NAME}-gateway"
   "route.route.openshift.io/bookinfo-a"
@@ -93,6 +94,7 @@ pass "Required routing, Rollout, application, and monitoring resources exist"
 # own Rollout, otherwise the namespace no longer represents two symmetric
 # application-level Rollouts.
 legacy_a_resources=(
+  "virtualservice.networking.istio.io/bookinfo-a"
   "service/bookinfo-a-productpage"
   "service/bookinfo-a-details"
   "service/bookinfo-a-reviews"
@@ -187,8 +189,8 @@ do
 done
 pass "Both stable/canary downstream stacks have ready endpoints"
 
-a_stable="$(oc get virtualservice.networking.istio.io bookinfo-a -n "$NAMESPACE" -o jsonpath='{.spec.http[?(@.name=="primary")].route[0].destination.host}')"
-a_canary="$(oc get virtualservice.networking.istio.io bookinfo-a -n "$NAMESPACE" -o jsonpath='{.spec.http[?(@.name=="primary")].route[1].destination.host}')"
+a_stable="$(oc get virtualservice.networking.istio.io "$A_VIRTUALSERVICE" -n "$NAMESPACE" -o jsonpath='{.spec.http[?(@.name=="primary")].route[0].destination.host}')"
+a_canary="$(oc get virtualservice.networking.istio.io "$A_VIRTUALSERVICE" -n "$NAMESPACE" -o jsonpath='{.spec.http[?(@.name=="primary")].route[1].destination.host}')"
 b_stable="$(oc get virtualservice.networking.istio.io bookinfo-b -n "$NAMESPACE" -o jsonpath='{.spec.http[?(@.name=="primary")].route[0].destination.host}')"
 b_canary="$(oc get virtualservice.networking.istio.io bookinfo-b -n "$NAMESPACE" -o jsonpath='{.spec.http[?(@.name=="primary")].route[1].destination.host}')"
 [[ "$a_stable" == "bookinfo-a-productpage-stable" ]] || die "Bookinfo A stable destination is ${a_stable:-missing}"

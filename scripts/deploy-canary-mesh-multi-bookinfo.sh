@@ -8,6 +8,7 @@ A_APP="${A_APP:-canary-mesh-multi-bookinfo-a}"
 B_APP="${B_APP:-canary-mesh-multi-bookinfo-b}"
 APP_NAME="$B_APP"
 A_ROLLOUT="${A_ROLLOUT:-bookinfo-a}"
+A_VIRTUALSERVICE="${A_VIRTUALSERVICE:-bookinfo-a-rollout}"
 B_ROLLOUT="${B_ROLLOUT:-bookinfo-b}"
 ROLLOUT_NAME="$B_ROLLOUT"
 ROLLOUT_MANAGER="${ROLLOUT_MANAGER:-argo-rollout}"
@@ -182,7 +183,7 @@ while (( SECONDS < deadline )); do
 done
 (( SECONDS < deadline )) || die "Bookinfo B did not become reachable through https://${host_b}/productpage"
 
-weights_a="$(oc get virtualservice.networking.istio.io bookinfo-a -n "$NAMESPACE" -o jsonpath='stable={.spec.http[?(@.name=="primary")].route[0].weight}% canary={.spec.http[?(@.name=="primary")].route[1].weight}%' 2>/dev/null || true)"
+weights_a="$(oc get virtualservice.networking.istio.io "$A_VIRTUALSERVICE" -n "$NAMESPACE" -o jsonpath='stable={.spec.http[?(@.name=="primary")].route[0].weight}% canary={.spec.http[?(@.name=="primary")].route[1].weight}%' 2>/dev/null || true)"
 weights_b="$(oc get virtualservice.networking.istio.io bookinfo-b -n "$NAMESPACE" -o jsonpath='stable={.spec.http[?(@.name=="primary")].route[0].weight}% canary={.spec.http[?(@.name=="primary")].route[1].weight}%' 2>/dev/null || true)"
 
 echo

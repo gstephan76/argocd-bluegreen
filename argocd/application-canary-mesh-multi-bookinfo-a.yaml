@@ -29,7 +29,7 @@ spec:
         - '.spec.selector."rollouts-pod-template-hash"'
     - group: networking.istio.io
       kind: VirtualService
-      name: bookinfo-a
+      name: bookinfo-a-rollout
       namespace: canary-mesh-multi-bookinfo
       jqPathExpressions:
         - '.spec.http[] | select(.name == "primary") | .route[].weight'

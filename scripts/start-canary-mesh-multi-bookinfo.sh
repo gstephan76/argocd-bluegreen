@@ -6,6 +6,7 @@ ARGOCD_NAMESPACE="${ARGOCD_NAMESPACE:-openshift-gitops}"
 B_APP="${B_APP:-canary-mesh-multi-bookinfo-b}"
 APP_NAME="$B_APP"
 A_ROLLOUT="${A_ROLLOUT:-bookinfo-a}"
+A_VIRTUALSERVICE="${A_VIRTUALSERVICE:-bookinfo-a-rollout}"
 B_ROLLOUT="${B_ROLLOUT:-bookinfo-b}"
 ROLLOUT_NAME="$B_ROLLOUT"
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-900}"
@@ -58,8 +59,8 @@ assert_bookinfo_a_parked() {
   details="$(oc get rollout "$A_ROLLOUT" -n "$NAMESPACE" -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="DETAILS_HOSTNAME")].value}' 2>/dev/null || true)"
   reviews="$(oc get rollout "$A_ROLLOUT" -n "$NAMESPACE" -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="REVIEWS_HOSTNAME")].value}' 2>/dev/null || true)"
   ratings="$(oc get rollout "$A_ROLLOUT" -n "$NAMESPACE" -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="RATINGS_HOSTNAME")].value}' 2>/dev/null || true)"
-  stable_weight="$(oc get virtualservice.networking.istio.io bookinfo-a -n "$NAMESPACE" -o jsonpath='{.spec.http[?(@.name=="primary")].route[0].weight}' 2>/dev/null || true)"
-  canary_weight="$(oc get virtualservice.networking.istio.io bookinfo-a -n "$NAMESPACE" -o jsonpath='{.spec.http[?(@.name=="primary")].route[1].weight}' 2>/dev/null || true)"
+  stable_weight="$(oc get virtualservice.networking.istio.io "$A_VIRTUALSERVICE" -n "$NAMESPACE" -o jsonpath='{.spec.http[?(@.name=="primary")].route[0].weight}' 2>/dev/null || true)"
+  canary_weight="$(oc get virtualservice.networking.istio.io "$A_VIRTUALSERVICE" -n "$NAMESPACE" -o jsonpath='{.spec.http[?(@.name=="primary")].route[1].weight}' 2>/dev/null || true)"
   [[ "$phase" == "Healthy" && -n "$stable" && "$stable" == "$current" &&
      "$marker" == "bookinfo-a-baseline-stable" &&
      "$details" == "bookinfo-a-details-stable" &&

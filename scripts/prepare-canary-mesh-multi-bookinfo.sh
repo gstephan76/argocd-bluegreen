@@ -7,7 +7,9 @@ A_APP="${A_APP:-canary-mesh-multi-bookinfo-a}"
 B_APP="${B_APP:-canary-mesh-multi-bookinfo-b}"
 APP_NAME="$B_APP"
 A_ROLLOUT="${A_ROLLOUT:-bookinfo-a}"
+A_VIRTUALSERVICE="${A_VIRTUALSERVICE:-bookinfo-a-rollout}"
 B_ROLLOUT="${B_ROLLOUT:-bookinfo-b}"
+B_VIRTUALSERVICE="${B_VIRTUALSERVICE:-bookinfo-b}"
 ROLLOUT_NAME="$B_ROLLOUT"
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-600}"
 POLL_SECONDS="${POLL_SECONDS:-5}"
@@ -110,7 +112,7 @@ for app in "$A_APP" "$B_APP"; do
 done
 
 recover_rollout_baseline() {
-  local rollout="$1" instance="$2" baseline_marker="$3"
+  local rollout="$1" instance="$2" baseline_marker="$3" virtualservice="$4"
   local deadline promotion_requested=0 phase stable current marker details reviews ratings stable_weight canary_weight
   echo "==> Recovering ${instance} trusted stable baseline"
   deadline=$((SECONDS + TIMEOUT_SECONDS))
@@ -122,8 +124,8 @@ recover_rollout_baseline() {
     details="$(oc get rollout "$rollout" -n "$NAMESPACE" -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="DETAILS_HOSTNAME")].value}' 2>/dev/null || true)"
     reviews="$(oc get rollout "$rollout" -n "$NAMESPACE" -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="REVIEWS_HOSTNAME")].value}' 2>/dev/null || true)"
     ratings="$(oc get rollout "$rollout" -n "$NAMESPACE" -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="RATINGS_HOSTNAME")].value}' 2>/dev/null || true)"
-    stable_weight="$(oc get virtualservice.networking.istio.io "$instance" -n "$NAMESPACE" -o jsonpath='{.spec.http[?(@.name=="primary")].route[0].weight}' 2>/dev/null || true)"
-    canary_weight="$(oc get virtualservice.networking.istio.io "$instance" -n "$NAMESPACE" -o jsonpath='{.spec.http[?(@.name=="primary")].route[1].weight}' 2>/dev/null || true)"
+    stable_weight="$(oc get virtualservice.networking.istio.io "$virtualservice" -n "$NAMESPACE" -o jsonpath='{.spec.http[?(@.name=="primary")].route[0].weight}' 2>/dev/null || true)"
+    canary_weight="$(oc get virtualservice.networking.istio.io "$virtualservice" -n "$NAMESPACE" -o jsonpath='{.spec.http[?(@.name=="primary")].route[1].weight}' 2>/dev/null || true)"
     printf '    %-10s phase=%s stable=%s current=%s marker=%s routing=stable:%s%%/canary:%s%%\n' \
       "$instance" "${phase:-unknown}" "${stable:-none}" "${current:-none}" "${marker:-missing}" \
       "${stable_weight:-unknown}" "${canary_weight:-unknown}"
@@ -149,17 +151,18 @@ recover_rollout_baseline() {
   die "Timed out restoring ${instance} stable baseline"
 }
 
-recover_rollout_baseline "$A_ROLLOUT" bookinfo-a "$A_BASELINE_MARKER"
-recover_rollout_baseline "$B_ROLLOUT" bookinfo-b "$B_BASELINE_MARKER"
+recover_rollout_baseline "$A_ROLLOUT" bookinfo-a "$A_BASELINE_MARKER" "$A_VIRTUALSERVICE"
+recover_rollout_baseline "$B_ROLLOUT" bookinfo-b "$B_BASELINE_MARKER" "$B_VIRTUALSERVICE"
 
 TIMEOUT_SECONDS="$TIMEOUT_SECONDS" bash scripts/check-canary-mesh-multi-bookinfo-dataplane.sh
 
-for instance in bookinfo-a bookinfo-b; do
-  stable_weight="$(oc get virtualservice.networking.istio.io "$instance" -n "$NAMESPACE" -o jsonpath='{.spec.http[?(@.name=="primary")].route[0].weight}' 2>/dev/null || true)"
-  canary_weight="$(oc get virtualservice.networking.istio.io "$instance" -n "$NAMESPACE" -o jsonpath='{.spec.http[?(@.name=="primary")].route[1].weight}' 2>/dev/null || true)"
+for routing in "bookinfo-a:${A_VIRTUALSERVICE}" "bookinfo-b:${B_VIRTUALSERVICE}"; do
+  instance="${routing%%:*}"
+  virtualservice="${routing#*:}"
+  stable_weight="$(oc get virtualservice.networking.istio.io "$virtualservice" -n "$NAMESPACE" -o jsonpath='{.spec.http[?(@.name=="primary")].route[0].weight}' 2>/dev/null || true)"
+  canary_weight="$(oc get virtualservice.networking.istio.io "$virtualservice" -n "$NAMESPACE" -o jsonpath='{.spec.http[?(@.name=="primary")].route[1].weight}' 2>/dev/null || true)"
   [[ "$stable_weight" == "100" && "$canary_weight" == "0" ]] ||
     die "${instance} baseline routing is not fully restored: stable=${stable_weight:-missing}% canary=${canary_weight:-missing}%"
-
 done
 
 host_a="$(oc get route bookinfo-a -n "$NAMESPACE" -o jsonpath='{.spec.host}')"
