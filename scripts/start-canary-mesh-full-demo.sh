@@ -32,21 +32,21 @@ if ! git diff --quiet || ! git diff --cached --quiet; then
 fi
 
 candidate_spec_in_git() {
-  grep -q 'demo-bookinfo-revision: "bookinfo-b-candidate-' "$ROLLOUT_FILE" &&
+  grep -Eq 'demo-bookinfo-revision:[[:space:]]*"?bookinfo-b-candidate-' "$ROLLOUT_FILE" &&
   grep -q 'track: canary' "$ROLLOUT_FILE" &&
   grep -q 'value: bookinfo-b-details-canary' "$ROLLOUT_FILE" &&
   grep -q 'value: bookinfo-b-reviews-canary' "$ROLLOUT_FILE" &&
   grep -q 'value: bookinfo-b-ratings-canary' "$ROLLOUT_FILE"
 }
 baseline_spec_in_git() {
-  grep -q 'demo-bookinfo-revision: "bookinfo-b-baseline-stable"' "$ROLLOUT_FILE" &&
+  grep -Eq 'demo-bookinfo-revision:[[:space:]]*"?bookinfo-b-baseline-stable"?[[:space:]]*$' "$ROLLOUT_FILE" &&
   grep -q 'track: stable' "$ROLLOUT_FILE" &&
   grep -q 'value: bookinfo-b-details-stable' "$ROLLOUT_FILE" &&
   grep -q 'value: bookinfo-b-reviews-stable' "$ROLLOUT_FILE" &&
   grep -q 'value: bookinfo-b-ratings-stable' "$ROLLOUT_FILE"
 }
 
-marker="$(sed -n -E 's/^[[:space:]]*demo-bookinfo-revision:[[:space:]]*"([^"]+)".*/\1/p' "$ROLLOUT_FILE" | head -1)"
+marker="$(sed -n -E 's/^[[:space:]]*demo-bookinfo-revision:[[:space:]]*"?([^"[:space:]]+)"?[[:space:]]*$/\1/p' "$ROLLOUT_FILE" | head -1)"
 phase="$(oc get rollout "$ROLLOUT_NAME" -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
 stable="$(oc get rollout "$ROLLOUT_NAME" -n "$NAMESPACE" -o jsonpath='{.status.stableRS}' 2>/dev/null || true)"
 current="$(oc get rollout "$ROLLOUT_NAME" -n "$NAMESPACE" -o jsonpath='{.status.currentPodHash}' 2>/dev/null || true)"
@@ -73,7 +73,7 @@ else
 
   marker="bookinfo-b-candidate-$(date -u +%Y%m%dT%H%M%SZ)"
   echo "==> Declaring full-demo Bookinfo B candidate ${marker}"
-  sed -i -E "s#demo-bookinfo-revision: \".*\"#demo-bookinfo-revision: \"${marker}\"#" "$ROLLOUT_FILE"
+  sed -i -E "s#^([[:space:]]*demo-bookinfo-revision:[[:space:]]*).*$#\1\"${marker}\"#" "$ROLLOUT_FILE"
   sed -i -E 's#track: (stable|canary)#track: canary#' "$ROLLOUT_FILE"
   sed -i -E 's#value: bookinfo-b-details-(stable|canary)#value: bookinfo-b-details-canary#' "$ROLLOUT_FILE"
   sed -i -E 's#value: bookinfo-b-reviews-(stable|canary)#value: bookinfo-b-reviews-canary#' "$ROLLOUT_FILE"

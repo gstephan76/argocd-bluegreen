@@ -56,7 +56,7 @@ git fetch origin "$branch"
 
 restore_baseline_file() {
   local file="$1" instance="$2" marker="$3"
-  sed -i -E "s#demo-bookinfo-revision: \".*\"#demo-bookinfo-revision: \"${marker}\"#" "$file"
+  sed -i -E "s#^([[:space:]]*demo-bookinfo-revision:[[:space:]]*).*$#\1\"${marker}\"#" "$file"
   sed -i -E 's#track: (stable|canary)#track: stable#' "$file"
   sed -i -E "s#value: ${instance}-details-(stable|canary)#value: ${instance}-details-stable#" "$file"
   sed -i -E "s#value: ${instance}-reviews-(stable|canary)#value: ${instance}-reviews-stable#" "$file"

@@ -15,7 +15,7 @@ spec:
   template:
     metadata:
       annotations:
-        demo-bookinfo-revision: bookinfo-a-baseline-stable
+        demo-bookinfo-revision: "bookinfo-a-baseline-stable"
         prometheus.io/scrape: 'true'
         prometheus.io/path: /stats/prometheus
         prometheus.io/port: '15090'
