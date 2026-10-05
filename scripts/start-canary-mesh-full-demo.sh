@@ -73,7 +73,7 @@ else
 
   marker="bookinfo-b-candidate-$(date -u +%Y%m%dT%H%M%SZ)"
   echo "==> Declaring full-demo Bookinfo B candidate ${marker}"
-  sed -i -E "s#^([[:space:]]*demo-bookinfo-revision:[[:space:]]*).*$#\1\"${marker}\"#" "$ROLLOUT_FILE"
+  sed -i -E "s|^([[:space:]]*demo-bookinfo-revision:[[:space:]]*).*$|\1\"${marker}\"|" "$ROLLOUT_FILE"
   sed -i -E 's#track: (stable|canary)#track: canary#' "$ROLLOUT_FILE"
   sed -i -E 's#value: bookinfo-b-details-(stable|canary)#value: bookinfo-b-details-canary#' "$ROLLOUT_FILE"
   sed -i -E 's#value: bookinfo-b-reviews-(stable|canary)#value: bookinfo-b-reviews-canary#' "$ROLLOUT_FILE"
