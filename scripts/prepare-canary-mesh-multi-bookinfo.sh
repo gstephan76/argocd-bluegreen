@@ -13,13 +13,14 @@ B_VIRTUALSERVICE="${B_VIRTUALSERVICE:-bookinfo-b}"
 ROLLOUT_NAME="$B_ROLLOUT"
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-600}"
 POLL_SECONDS="${POLL_SECONDS:-5}"
+CLEAN_ROLLOUT_HISTORY="${CLEAN_ROLLOUT_HISTORY:-1}"
 A_ROLLOUT_FILE="canary-mesh-multi-bookinfo/bookinfo-a/rollout.yaml"
 B_ROLLOUT_FILE="canary-mesh-multi-bookinfo/bookinfo-b/rollout.yaml"
 A_BASELINE_MARKER="bookinfo-a-baseline-stable"
 B_BASELINE_MARKER="bookinfo-b-baseline-stable"
 
 die(){ echo "ERROR: $*" >&2; exit 1; }
-for c in oc git sed grep curl; do command -v "$c" >/dev/null 2>&1 || die "$c not found"; done
+for c in oc git sed grep curl jq; do command -v "$c" >/dev/null 2>&1 || die "$c not found"; done
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/lib-canary-mesh.sh"
@@ -153,6 +154,63 @@ recover_rollout_baseline() {
 
 recover_rollout_baseline "$A_ROLLOUT" bookinfo-a "$A_BASELINE_MARKER" "$A_VIRTUALSERVICE"
 recover_rollout_baseline "$B_ROLLOUT" bookinfo-b "$B_BASELINE_MARKER" "$B_VIRTUALSERVICE"
+
+cleanup_rollout_history() {
+  local rollout="$1" instance="$2" phase stable current
+  local -a analysis_runs stale_replicasets
+
+  phase="$(oc get rollout "$rollout" -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+  stable="$(oc get rollout "$rollout" -n "$NAMESPACE" -o jsonpath='{.status.stableRS}' 2>/dev/null || true)"
+  current="$(oc get rollout "$rollout" -n "$NAMESPACE" -o jsonpath='{.status.currentPodHash}' 2>/dev/null || true)"
+  [[ "$phase" == "Healthy" && -n "$stable" && "$stable" == "$current" ]] ||
+    die "Refusing to clean ${instance} history before it is Healthy with stableRS=currentPodHash"
+
+  echo "==> Cleaning ${instance} Rollout history for a compact Argo CD tree"
+
+  mapfile -t analysis_runs < <(
+    oc get analysisrun -n "$NAMESPACE" -o json |
+      jq -r --arg rollout "$rollout" '
+        .items[] |
+        select(any(.metadata.ownerReferences[]?; .kind == "Rollout" and .name == $rollout)) |
+        .metadata.name
+      '
+  )
+  if (( ${#analysis_runs[@]} > 0 )); then
+    printf '    deleting AnalysisRuns: %s\n' "${analysis_runs[*]}"
+    oc delete analysisrun -n "$NAMESPACE" "${analysis_runs[@]}" --wait=true >/dev/null
+  else
+    echo "    no historical AnalysisRuns"
+  fi
+
+  mapfile -t stale_replicasets < <(
+    oc get replicaset -n "$NAMESPACE" -o json |
+      jq -r --arg rollout "$rollout" --arg keep "$stable" '
+        .items[] |
+        select(any(.metadata.ownerReferences[]?; .kind == "Rollout" and .name == $rollout)) |
+        select((.metadata.labels["rollouts-pod-template-hash"] // "") != $keep) |
+        .metadata.name
+      '
+  )
+  if (( ${#stale_replicasets[@]} > 0 )); then
+    printf '    deleting stale ReplicaSets: %s\n' "${stale_replicasets[*]}"
+    oc delete replicaset -n "$NAMESPACE" "${stale_replicasets[@]}" --wait=true >/dev/null
+  else
+    echo "    no stale ReplicaSets"
+  fi
+}
+
+case "$CLEAN_ROLLOUT_HISTORY" in
+  1|true|TRUE|yes|YES)
+    cleanup_rollout_history "$A_ROLLOUT" bookinfo-a
+    cleanup_rollout_history "$B_ROLLOUT" bookinfo-b
+    ;;
+  0|false|FALSE|no|NO)
+    echo "==> Preserving Rollout history because CLEAN_ROLLOUT_HISTORY=${CLEAN_ROLLOUT_HISTORY}"
+    ;;
+  *)
+    die "CLEAN_ROLLOUT_HISTORY must be 1/0, true/false, or yes/no"
+    ;;
+esac
 
 TIMEOUT_SECONDS="$TIMEOUT_SECONDS" bash scripts/check-canary-mesh-multi-bookinfo-dataplane.sh
 

@@ -226,6 +226,13 @@ Bookinfo A = Healthy, stable=100%, canary=0%
 Bookinfo B = Healthy, stable=100%, canary=0%
 ```
 
+After both Rollouts are safely back at that baseline, `prepare` also removes
+historical `AnalysisRun` objects and scaled-down ReplicaSets owned by each
+Rollout. The current stable ReplicaSet and the Rollout CR itself are preserved.
+This keeps the Argo CD resource tree compact between demo runs without causing
+the productpage workload to be recreated. Set `CLEAN_ROLLOUT_HISTORY=0` to
+preserve the history for troubleshooting.
+
 `start` mutates and exercises **only Bookinfo B**. It refuses to begin if Bookinfo
 A is not still parked at its baseline.
 
@@ -282,8 +289,10 @@ The operational scripts are designed to converge on their requested state.
 active Rollout back to baseline.
 
 `prepare` may be rerun at baseline, during Bookinfo B's rollout, at the final
-pause, or after promotion. It restores and verifies both A and B baselines and
-creates a Git commit only when the declarative baseline actually changed.
+pause, or after promotion. It restores and verifies both A and B baselines,
+creates a Git commit only when the declarative baseline actually changed, and
+by default cleans completed Rollout history from the cluster after convergence.
+The cleanup is idempotent and never deletes the current stable ReplicaSet.
 
 `start` operates only on Bookinfo B and reuses an already-declared Bookinfo B
 candidate instead of creating another timestamped revision.
